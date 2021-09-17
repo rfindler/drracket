@@ -1220,7 +1220,17 @@ If the namespace does not, they are colored the unbound color.
                                       (= start-y end-y))
                            (drracket:arrow:draw-arrow dc start-x start-y end-x end-y dx dy
                                                       #:pen-width 2)
-                           (when (and (var-arrow? arrow) (not (var-arrow-actual? arrow)))
+                           (define arrowhead-label
+                             (cond
+                               [(var-arrow? arrow)
+                                (cond
+                                  [(not (var-arrow-actual? arrow))
+                                   "?"]
+                                  [(var-arrow-level arrow)
+                                   (format "~a" (var-arrow-level arrow))]
+                                  [else #f])]
+                               [else #f]))
+                           (when arrowhead-label
                              (define old-font (send dc get-font))
                              (send dc set-font
                                    (send the-font-list find-or-create-font
@@ -1233,8 +1243,8 @@ If the namespace does not, they are colored the unbound color.
                                          (send old-font get-smoothing)
                                          #f
                                          (send old-font get-hinting)))
-                             (define-values (fw fh _d _v) (send dc get-text-extent "?"))
-                             (send dc draw-text "?"
+                             (define-values (fw fh _d _v) (send dc get-text-extent arrowhead-label))
+                             (send dc draw-text arrowhead-label
                                    (+ end-x dx (/ fw 2))
                                    (+ end-y dy (- fh)))
                              (send dc set-font old-font))))]
