@@ -9,14 +9,15 @@
          racket/format
          racket/unit
          racket/class
+         racket/hash
          racket/gui/base
          syntax-color/module-lexer
          framework
          framework/private/srcloc-panel
          framework/private/logging-timer
          drracket/private/drsig
+         drracket/insulated-read-language
          "local-member-names.rkt"
-         "insulated-read-language.rkt"
          "eval-helpers-and-pref-init.rkt"
          string-constants)
 
@@ -279,11 +280,9 @@
             ;; language so we can safely skip this
             (define the-irl (send (get-definitions-text) get-irl))
             (send ints-surrogate set-get-token
-                  (call-read-language the-irl 'color-lexer (waive-option module-lexer)))
+                  (call-read-language the-irl 'color-lexer))
             (send ints-surrogate set-matches
-                  (call-read-language the-irl
-                                      'drracket:paren-matches
-                                      racket:default-paren-matches))
+                  (call-read-language the-irl 'drracket:paren-matches))
             (set-surrogate ints-surrogate)))
         (super reset-console))
 
@@ -398,7 +397,13 @@
         (when timer (send timer stop))
         (send (get-tab) set-hash-lang-error-state #f)
         (define port (open-input-text-editor this))
-        (reset-irl! the-irl port (get-irl-directory) flush-irl-cache?)
+        (reset-irl! the-irl port
+                    #:in-dynamic-extent
+                    (if flush-irl-cache?
+                        (new-preferences-layer-wrapper)
+                        #f)
+                    #:directory (get-irl-directory)
+                    #:flush-cache? flush-irl-cache?)
         (define-values (lang-name-start lang-name-end)
           (get-read-language-port-start+end the-irl))
         (set! hash-lang-language (and lang-name-end (get-text lang-name-start lang-name-end)))
@@ -409,41 +414,31 @@
         
         (clear-things-out)
 
-        (define mode (or (get-definitions-text-surrogate the-irl)
+        (define mode (or (call-read-language the-irl 'definitions-text-surrogate)
                          (new racket:text-mode% [include-paren-keymap? #f])))
         (send mode set-get-token (get-insulated-module-lexer the-irl))
         (define paren-matches
-          (call-read-language the-irl 'drracket:paren-matches racket:default-paren-matches))
+          (call-read-language the-irl 'drracket:paren-matches))
         (send mode set-matches paren-matches)
         (set-surrogate mode)
 
         (define lang-wants-big-defs/ints-labels?
-          (and (call-read-language the-irl 'drracket:show-big-defs/ints-labels #f)
+          (and (call-read-language the-irl 'drracket:show-big-defs/ints-labels)
                #t))
         (set-lang-wants-big-defs/ints-labels? lang-wants-big-defs/ints-labels?)
         (send (send (get-tab) get-ints) set-lang-wants-big-defs/ints-labels?
               lang-wants-big-defs/ints-labels?)
         
-        (set! extra-default-filters
-              (or (call-read-language the-irl 'drracket:default-filters #f)
-                  '()))
+        (set! extra-default-filters (call-read-language the-irl 'drracket:default-filters))
           
-        (set! default-extension
-              (or (call-read-language the-irl 'drracket:default-extension #f)
-                  ""))
+        (set! default-extension (call-read-language the-irl 'drracket:default-extension))
         
-        (set! indentation-function
-              (or (call-read-language the-irl 'drracket:indentation #f)
-                  (λ (x y) #f)))
-        (set! range-indentation-function
-              (or (call-read-language the-irl 'drracket:range-indentation #f)
-                  (λ (x y z) #f)))
-        (set! grouping-position
-              (or (call-read-language the-irl 'drracket:grouping-position #f)
-                  default-grouping-position))
+        (set! indentation-function (call-read-language the-irl 'drracket:indentation))
+        (set! range-indentation-function (call-read-language the-irl 'drracket:range-indentation))
+        (set! grouping-position (call-read-language the-irl 'drracket:grouping-position))
 
         (set! lang-keymap (new keymap:aug-keymap%))
-        (for ([key+proc (in-list (call-read-language the-irl 'drracket:keystrokes '()))])
+        (for ([key+proc (in-list (call-read-language the-irl 'drracket:keystrokes))])
           (define key (list-ref key+proc 0))
           (define proc (list-ref key+proc 1))
           (define name
@@ -460,20 +455,20 @@
         (send lang-keymap chain-to-keymap
               (make-paren-matches-keymap
                paren-matches
-               (call-read-language the-irl 'drracket:quote-matches (list #\" #\|)))
+               (call-read-language the-irl 'drracket:quote-matches))
               #t)
         (send (get-keymap) chain-to-keymap lang-keymap #t)
 
         (register-new-buttons
-         (or (call-read-language the-irl 'drracket:toolbar-buttons #f)
-             (call-read-language the-irl 'drscheme:toolbar-buttons #f))
+         (or (call-read-language the-irl 'drracket:toolbar-buttons)
+             (call-read-language the-irl 'drscheme:toolbar-buttons))
          
-         (let ([drracket-opt-out (call-read-language the-irl 'drracket:opt-out-toolbar-buttons '())]
-               [drscheme-opt-out (call-read-language the-irl 'drscheme:opt-out-toolbar-buttons '())])
+         (let ([drracket-opt-out (call-read-language the-irl 'drracket:opt-out-toolbar-buttons)]
+               [drscheme-opt-out (call-read-language the-irl 'drscheme:opt-out-toolbar-buttons)])
            (and drracket-opt-out drscheme-opt-out
                 (append drracket-opt-out drscheme-opt-out)))
 
-         (call-read-language the-irl 'drracket:opt-in-toolbar-buttons '())))
+         (call-read-language the-irl 'drracket:opt-in-toolbar-buttons)))
 
       ;; removes language-specific customizations
       (define/private (clear-things-out)
@@ -655,11 +650,83 @@
       
       (super-new)
 
-      (define the-irl (make-irl (get-irl-directory) (λ (exn) (irl-blew-up exn))))
+      
+      (define the-irl
+        (make-irl (get-irl-directory)
+                  (λ (exn) (irl-blew-up exn))
+                  additional-irl-key+contracts
+                  #:in-dynamic-extent (new-preferences-layer-wrapper)
+                  #:shared-modules
+                  (list
+                   'drracket/tool-lib
+                   ;; attaching drracket/syncheck-drracket-button is an unfortunate
+                   ;; hack. It is needed to make the check syntax button work in
+                   ;; #lang-based langauges that go via the the
+                   ;; insulated-read-language apparatus. It is a hack becuase it adds
+                   ;; a dependency between DrRacket itself and check syntax (the
+                   ;; dependencies are supposed to only go the other way because
+                   ;; check syntax is a plugin). It
+                   ;; is in the invocation of the local-member-name in the callback
+                   ;; that passes the drracket frame there that requires this to be
+                   ;; in the irl namespace.
+                   'drracket/syncheck-drracket-button)))
       (define/public (get-irl) the-irl)
       (set! in-module-language? 
             (is-a? (drracket:language-configuration:language-settings-language (get-next-settings))
                    drracket:module-language:module-language<%>))))
+
+  (define drracket:toolbar-buttons-defaults
+    (syntax-info-details
+     (or/c #f (listof (or/c (list/c string?
+                                    (is-a?/c bitmap%)
+                                    ;; this is problematic; the object is the drracket frame;
+                                    ;; how do we guard against installing callbacks here?
+                                    (-> object? any))
+                            (list/c string?
+                                    (is-a?/c bitmap%)
+                                    ;; this is problematic; the object is the drracket frame;
+                                    ;; how do we guard against installing callbacks here?
+                                    (-> object? any)
+                                    (or/c real? #f)))))
+     (flat)
+     #f))
+
+  (define additional-irl-key+contracts
+    (hash-union
+     simple-irl-keys
+     (hash 'definitions-text-surrogate
+           (syntax-info-details
+            (or/c #f (implementation?/c
+                      ;; the framework should be shared in the namespace
+                      ;; with this module by the time we get here
+                      (dynamic-require 'framework 'racket:text-mode<%>)))
+            (flat #:in-irl-adjustment
+                  mp
+                  (and mp (dynamic-require mp 'surrogate%))
+                  #f)
+            #f)
+
+           'drracket:show-big-defs/ints-labels (syntax-info-details any/c (flat) #f)
+           ;; string? is too permissive; need racket/gui to publish
+           ;; the actual contract (used on `map-function`)
+           'drracket:keystrokes (syntax-info-details
+                                 (listof (list/c string? (-> any/c any/c any/c)))
+                                 (flat) ;; this is unsafe; only for trusted languages
+                                 '())
+           'drracket:toolbar-buttons drracket:toolbar-buttons-defaults
+           'drscheme:toolbar-buttons drracket:toolbar-buttons-defaults
+        
+
+           'drracket:opt-out-toolbar-buttons (syntax-info-details (or/c #f (listof symbol?)) (flat) #f)
+           'drscheme:opt-out-toolbar-buttons (syntax-info-details (or/c #f (listof symbol?)) (flat) #f)
+           'drracket:opt-in-toolbar-buttons (syntax-info-details (or/c #f (listof symbol?)) (flat) #f))))
+
+  (define original-preferences-layer (preferences:current-layer))
+  (define (new-preferences-layer-wrapper)
+    (define layer (preferences:new-layer original-preferences-layer))
+    (λ (t)
+      (parameterize ([preferences:current-layer layer])
+        (t))))
 
   (define paren-matches-keymaps (make-hash))
   (define (make-paren-matches-keymap paren-matches quote-matches)

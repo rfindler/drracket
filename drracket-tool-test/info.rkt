@@ -5,7 +5,7 @@
 (define deps '("base"
                "rackunit-lib"
                "drracket-tool-lib"))
-(define build-deps '())
+(define build-deps '("gui-lib" "syntax-color-lib"))
 
 (define pkg-desc "Tests for IDE tools that DrRacket supports")
 

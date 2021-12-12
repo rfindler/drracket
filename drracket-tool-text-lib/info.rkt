@@ -6,7 +6,9 @@
                "scribble-lib"
                ["string-constants-lib" #:version "1.12"]
                "scribble-lib"
-               "racket-index"))
+               "racket-index"
+               "syntax-color-lib"
+               "option-contract-lib"))
 (define build-deps '("at-exp-lib"
                      "rackunit-lib"))
 

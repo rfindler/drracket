@@ -26,7 +26,7 @@
          "rep.rkt"
          "eval-helpers-and-pref-init.rkt"
          "local-member-names.rkt"
-         "insulated-read-language.rkt"
+         drracket/insulated-read-language
          drracket/private/rectangle-intersect
          pkg/lib
          pkg/gui

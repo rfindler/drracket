@@ -32,7 +32,8 @@ TODO
          "local-member-names.rkt"
          "stack-checkpoint.rkt"
          "parse-logger-args.rkt"
-         "insulated-read-language.rkt"
+         drracket/insulated-read-language
+         (submod drracket/insulated-read-language skip-past-comments)
          
          ;; the dynamic-require below loads this module, 
          ;; so we make the dependency explicit here, even
@@ -1040,15 +1041,9 @@ TODO
         (or (send key get-control-down)
             (send key get-alt-down)
             (and prompt-position
-                 (let ([pred (get-insulated-submit-predicate (send definitions-text get-irl))])
-                   (cond
-                     [pred
-                      (pred 
-                       (open-input-text-editor this prompt-position)
-                       (only-whitespace-after-insertion-point))]
-                     [else
-                      (and (only-whitespace-after-insertion-point)
-                           (submit-predicate this prompt-position))])))))
+                 ((call-read-language (send definitions-text get-irl) 'drracket:submit-predicate)
+                  (open-input-text-editor this prompt-position)
+                  (only-whitespace-after-insertion-point)))))
       
       (define/private (only-whitespace-after-insertion-point)
         (let ([start (get-start-position)]

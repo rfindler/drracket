@@ -647,4 +647,6 @@ provides just the information needed for completions.
   to the pkg directories.
 }
 
+@include-section["insulated-read-language.scrbl"]
+
 @(close-eval syncheck-example-eval)
