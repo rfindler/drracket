@@ -4,9 +4,7 @@
          racket/class
          racket/set
          racket/contract
-         racket/list
          syntax/moddep
-         syntax/toplevel
          framework
          string-constants
          mrlib/graph
@@ -14,8 +12,6 @@
          "eval-helpers-and-pref-init.rkt"
          racket/unit
          racket/async-channel
-         racket/match
-         setup/private/lib-roots
          racket/port
          drracket/private/rectangle-intersect
          drracket/private/standalone-module-browser)
@@ -214,9 +210,8 @@
              (unless (eq? val 'done)
                (let ([name-original (list-ref val 0)]
                      [name-require (list-ref val 1)]
-                     [path-key (list-ref val 2)]
-                     [require-depth (list-ref val 3)])
-                 (send pasteboard add-connection name-original name-require path-key require-depth))
+                     [require-depth (list-ref val 2)])
+                 (send pasteboard add-connection name-original name-require require-depth))
                (loop))]))))
     (send pasteboard end-adding-connections)
     

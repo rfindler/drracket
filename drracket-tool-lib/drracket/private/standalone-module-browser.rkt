@@ -15,7 +15,6 @@
          racket/unit
          racket/async-channel
          racket/match
-         setup/private/lib-roots
          setup/dirs
          racket/port
          compiler/module-suffix
@@ -41,10 +40,9 @@
 (preferences:set-default 'drracket:module-browser:name-length 1 
                          (λ (x) (memq x '(0 1 2 3))))
 
-(define-struct req (r-mpi key))
+(define-struct req (r-mpi))
 ;; type req = (make-req [result from resolve-module-path-index] -- except only when it has a path
-;;                      (or/c symbol? #f))
-
+;;                      )
 
 (provide process-program-unit
          process-program-import^
@@ -67,7 +65,6 @@
 (define progress-label (string-constant module-browser-progress-label))
 (define laying-out-graph-label (string-constant module-browser-laying-out-graph-label))
 (define open-file-format (string-constant module-browser-open-file-format))
-(define lib-paths-checkbox-constant (string-constant module-browser-show-lib-paths))
 
 (define (set-box/f b v) (when (box? b) (set-box! b v)))
 
@@ -78,21 +75,17 @@
   (interface ()
     set-label-font-size
     get-label-font-size
-    get-hidden-paths
-    show-visible-paths
-    remove-visible-paths
     set-name-length
     get-name-length
     get-pkgs
-    get-main-file-pkg))
+    get-main-file-pkg
+    restrict-files-to-pkgs))
 
 (define boxed-word-snip<%>
   (interface ()
     get-filename
     get-word
     get-lines
-    is-special-key-child?
-    add-special-key-child
     set-found!))
 
 (define/contract (render-phases s)
@@ -250,7 +243,6 @@
         (for ([require (in-list requires)])
           (add-connection module-name
                           (req-r-mpi require)
-                          (req-key require)
                           level)
           (add-submod/filename-connections (req-r-mpi require))))))
   
@@ -258,9 +250,9 @@
   ;; name-original and name-require and the identifiers for those paths and
   ;; original-filename? and require-filename? are booleans indicating if the names
   ;; are filenames.
-  (define (add-connection name-original name-require req-sym require-depth)
+  (define (add-connection name-original name-require require-depth)
     (async-channel-put connection-channel
-                       (list name-original name-require req-sym require-depth)))
+                       (list name-original name-require require-depth)))
   
   (define (extract-module-name stx)
     (syntax-case stx ()
@@ -269,12 +261,6 @@
             (identifier? (syntax m-name)))
        (format "~a" (syntax->datum (syntax m-name)))]
       [else unknown-module-name]))
-
-  ;; maps a path to the path of its "library" (see setup/private/lib-roots)
-  (define get-lib-root
-    (let ([t (make-hash)]) ; maps paths to their library roots
-      (lambda (path)
-        (hash-ref! t path (lambda () (path->library-root path))))))
 
   ;; extract-filenames :
   ;;   (listof (union symbol module-path-index)) 
@@ -285,7 +271,6 @@
       (match base/submod
         [`(submod ,p ,_ ...) p]
         [else base/submod]))
-    (define base-lib (get-lib-root base))
     (for*/list ([dr (in-list direct-requires)]
                 [r-mpi (in-value (and (module-path-index? dr)
                                       (resolve-module-path-index dr base)))]
@@ -293,31 +278,13 @@
       (define path (build-module-filename (to-path r-mpi) #t))
       (make-req (match r-mpi
                   [(? path?) (simplify-path r-mpi)]
-                  [`(submod ,p ,submods ...) `(submod ,(simplify-path p) ,@submods)])
-                (get-key dr base-lib path))))
+                  [`(submod ,p ,submods ...) `(submod ,(simplify-path p) ,@submods)]))))
   
   (define (to-path r-mpi)
     (match r-mpi
       [(? path? p) p]
       [`(submod ,(? path? p) ,_ ...) p]
-      [(? symbol?) #f]))
-
-  (define (get-key dr requiring-libroot required)
-    (and (module-path-index? dr)
-         ;; files in the same library => return #f as if the require
-         ;; is a relative one, so any kind of require from the same
-         ;; library is always displayed (regardless of hiding planet
-         ;; or lib links)
-         ;; if `requiring-libroot` is #f we just skip this check;
-         ;; this indicates that we're not in a libroot
-         (or (not requiring-libroot)
-             (not (equal? requiring-libroot (get-lib-root required))))
-         (let-values ([(a b) (module-path-index-split dr)])
-           (match a
-             [(? symbol?) 'lib]
-             [(list 'submod (? symbol?) _ ...) 'lib]
-             [(list (? symbol? s) _ ...) s]
-             [_ #f])))))
+      [(? symbol?) #f])))
 
 (define (standalone-module-overview/file filename)
   (module-overview/file filename #f standalone-fill-pasteboard
@@ -433,16 +400,6 @@
                [choices (sort (set->list (send pasteboard get-pkgs)) string<?)]))
         (send pkg-choice set-string-selection (send pasteboard get-main-file-pkg))
         
-        (define lib-paths-checkbox
-          (instantiate check-box% ()
-            (label lib-paths-checkbox-constant)
-            (parent vp)
-            (callback
-             (λ (x y)
-               (if (send lib-paths-checkbox get-value)
-                   (send pasteboard show-visible-paths 'lib)
-                   (send pasteboard remove-visible-paths 'lib))))))
-        
         (define ec (make-object overview-editor-canvas% vp pasteboard))
         
         (define search-hp (new horizontal-panel% [parent vp] [stretchable-height #f]))
@@ -483,8 +440,6 @@
           (send pasteboard end-edit-sequence))
         (update-found-and-search-hits #f) ;; only to initialize search-hits
         
-        (send lib-paths-checkbox set-value
-              (not (memq 'lib (preferences:get 'drracket:module-browser:hide-paths))))
         (set! update-label
               (λ (s)
                 (if (and s (not (null? s)))
@@ -564,6 +519,8 @@
 
       (define original-plain-links (make-hash))
       (define original-for-syntax-links (make-hash))
+      (define/public (restrict-files-to-pkgs pkgs)
+        (error 'restrict-files-to-pkgs "not yet implemented"))
 
       (define path->pkg-cache (make-hash))
       (define all-pkgs #f)
@@ -579,7 +536,10 @@
       (define/public (set-name-length nl)
         (unless (eq? name-length nl)
           (set! name-length nl)
-          (re-add-snips)
+          (begin-edit-sequence)
+          (remove-currrently-inserted)
+          (add-all)
+          (end-edit-sequence)
           (render-snips)))
       (define/public (get-name-length) name-length)
       
@@ -663,11 +623,8 @@
                        all-pkgs)])))
           (set! all-pkgs all-the-pkgs))
         
-        (printf "all-pkgs ~s\n" all-pkgs)
-        
         (set! max-lines #f)
         (compute-snip-require-phases)
-        (remove-specially-linked)
         (render-snips)
         (end-edit-sequence))
       
@@ -688,7 +645,7 @@
       ;; name-original and name-require and the identifiers for those paths and
       ;; original-filename? and require-filename? are booleans indicating if the names
       ;; are filenames.
-      (define/public (add-connection name-original name-require path-key require-depth)
+      (define/public (add-connection name-original name-require require-depth)
         (unless max-lines
           (error 'add-connection "not in begin-adding-connections/end-adding-connections sequence"))
         (let* ([original-snip (find/create-snip name-original)]
@@ -714,8 +671,6 @@
              (add-links original-snip require-snip 
                         dark-syntax-pen light-syntax-pen
                         dark-syntax-brush light-syntax-brush)])
-          (when path-key
-            (send original-snip add-special-key-child path-key require-snip))
           (if (send original-snip get-level)
               (fix-snip-level require-snip (+ original-level 1))
               (fix-snip-level original-snip 0))))
@@ -808,48 +763,7 @@
           (get-snip-location snip #f bb #t)
           (- (unbox bb)
              (unbox tb))))
-      
-      (field [hidden-paths (preferences:get 'drracket:module-browser:hide-paths)])
-      (define/public (remove-visible-paths symbol)
-        (unless (memq symbol hidden-paths)
-          (set! hidden-paths (cons symbol hidden-paths))
-          (refresh-visible-paths)))
-      (define/public (show-visible-paths symbol)
-        (when (memq symbol hidden-paths)
-          (set! hidden-paths (remq symbol hidden-paths))
-          (refresh-visible-paths)))
-      (define/public (get-hidden-paths) hidden-paths)
-      
-      (define/private (refresh-visible-paths)
-        (begin-edit-sequence)
-        (re-add-snips)
-        (render-snips)
-        (end-edit-sequence))
-      
-      (define/private (re-add-snips)
-        (begin-edit-sequence)
-        (remove-specially-linked)
-        (end-edit-sequence))
-      
-      (define/private (remove-specially-linked)
-        (remove-currrently-inserted)
-        (cond
-          [(null? hidden-paths)
-           (add-all)]
-          [else
-           (let ([ht (make-hasheq)])
-             (for ([snip (in-list (get-top-most-snips))])
-               (insert snip)
-               (let loop ([snip snip])
-                 (unless (hash-ref ht snip #f)
-                   (hash-set! ht snip #t)
-                   (for ([child (in-list (send snip get-children))])
-                     (unless (ormap (λ (key) (send snip is-special-key-child?
-                                                   key child))
-                                    hidden-paths)
-                       (insert child)
-                       (loop child)))))))]))
-      
+
       (define/private (remove-currrently-inserted)
         (let loop ()
           (let ([snip (find-first-snip)])
@@ -1027,13 +941,6 @@
           (set! last-name #f)
           (set! last-size #f)
           (set! require-phases (sort (cons d require-phases) < #:key (λ (x) (or x +inf.0))))))
-      
-      (field [special-children (make-hasheq)])
-      (define/public (is-special-key-child? key child)
-        (let ([ht (hash-ref special-children key #f)])
-          (and ht (hash-ref ht child #f))))
-      (define/public (add-special-key-child key child)
-        (hash-set! (hash-ref! special-children key make-hasheq) child #t))
       
       (define/public (get-filename) filename)
       (define/public (get-word) word)
@@ -1260,10 +1167,9 @@
          (loop)]
         [(connect)
          (define name-original (list-ref val 0))
-         (define name-require (list-ref val 1))
-         (define path-key (list-ref val 2))
-         (define require-depth (list-ref val 3))
-         (send pasteboard add-connection name-original name-require path-key require-depth)
+         (define path-key (list-ref val 1))
+         (define require-depth (list-ref val 2))
+         (send pasteboard add-connection name-original path-key require-depth)
          (loop)])))
   (send pasteboard end-adding-connections)
   

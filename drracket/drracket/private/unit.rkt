@@ -51,7 +51,6 @@
 
 (define module-browser-progress-constant (string-constant module-browser-progress))
 (define status-compiling-definitions (string-constant module-browser-compiling-defns))
-(define show-lib-paths (string-constant module-browser-show-lib-paths/short))
 (define show-planet-paths (string-constant module-browser-show-planet-paths/short))
 (define refresh (string-constant module-browser-refresh))
 
@@ -3759,8 +3758,6 @@
              [module-browser-panel #f]
              [module-browser-ec #f]
              [module-browser-button #f]
-             [module-browser-lib-path-check-box #f]
-             [module-browser-planet-path-check-box #f]
              [module-browser-name-length-choice #f]
              [module-browser-pb #f]
              [module-browser-menu-item 'module-browser-menu-item-unset])
@@ -3811,26 +3808,6 @@
           (set! module-browser-ec (make-object editor-canvas%
                                     module-browser-panel
                                     module-browser-pb))
-          
-          (let* ([show-callback
-                  (λ (cb key)
-                    (if (send cb get-value)
-                        (send module-browser-pb show-visible-paths key)
-                        (send module-browser-pb remove-visible-paths key))
-                    (preferences:set 'drracket:module-browser:hide-paths 
-                                     (send module-browser-pb get-hidden-paths)))]
-                 [mk-checkbox
-                  (λ (key label)
-                    (new check-box%
-                         (parent module-browser-panel)
-                         (label label)
-                         (value (not (memq key (preferences:get 
-                                                'drracket:module-browser:hide-paths))))
-                         (callback 
-                          (λ (cb _) 
-                            (show-callback cb key)))))])
-            (set! module-browser-lib-path-check-box (mk-checkbox 'lib show-lib-paths))
-            (set! module-browser-planet-path-check-box (mk-checkbox 'planet show-planet-paths)))
           
           (set! module-browser-name-length-choice
                 (new choice%
@@ -3893,8 +3870,6 @@
             (open-status-line 'plt:module-browser)
             (update-status-line 'plt:module-browser status-compiling-definitions)
             (send module-browser-button enable #f)
-            (send module-browser-lib-path-check-box enable #f)
-            (send module-browser-planet-path-check-box enable #f)
             (send module-browser-name-length-choice enable #f)
             (disable-evaluation-in-tab current-tab)
             (drracket:module-overview:fill-pasteboard 
@@ -3911,8 +3886,6 @@
             (send mod-tab set-breakables old-break-thread old-custodian)
             (send mod-tab enable-evaluation)
             (send module-browser-button enable #t)
-            (send module-browser-lib-path-check-box enable #t)
-            (send module-browser-planet-path-check-box enable #t)
             (send module-browser-name-length-choice enable #t)
             (close-status-line 'plt:module-browser))))
       
