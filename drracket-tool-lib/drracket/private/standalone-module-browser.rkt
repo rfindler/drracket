@@ -690,7 +690,7 @@
 
       (define/private (fix-snip-level-after-linking original-snip require-snip)
         (define original-level (send original-snip get-level))
-        (if (send original-snip get-level)
+        (if original-level
             (fix-snip-level require-snip (+ original-level 1))
             (fix-snip-level original-snip 0)))
       
@@ -801,7 +801,8 @@
         (reset-levels)
         (for ([root (in-list roots)])
           (when (set-member? pkg-restriction (send root get-pkg))
-            (insert root))
+            (insert root)
+            (send root set-level 0))
           (let loop ([parent-to-link (if (set-member? pkg-restriction (send root get-pkg)) root #f)]
                      [parent root]
                      [through-for-syntax? #f])
@@ -811,11 +812,13 @@
                 (cond
                   [(set-member? pkg-restriction (send child get-pkg))
                    (insert child)
-                   (when parent-to-link
-                     (if (or for-syntax-child? through-for-syntax?)
-                         (add-for-syntax-link parent-to-link child)
-                         (add-regular-link parent-to-link child))
-                     (fix-snip-level-after-linking parent-to-link child))
+                   (cond
+                     [parent-to-link
+                      (if (or for-syntax-child? through-for-syntax?)
+                          (add-for-syntax-link parent-to-link child)
+                          (add-regular-link parent-to-link child))
+                      (fix-snip-level-after-linking parent-to-link child)]
+                     [else (fix-snip-level child 0)])
                    (loop child child #f)]
                   [else
                    (loop parent-to-link child (or through-for-syntax? for-syntax-child?))]))
