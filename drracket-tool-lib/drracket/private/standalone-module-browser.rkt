@@ -458,7 +458,7 @@
                 [(0) 'long]
                 [(1) 'long]
                 [(2) 'long]
-                [(3) 'very-long]))          
+                [(3) 'very-long]))
         ;; shouldn't be necessary here -- need to find callback on editor
         (send pasteboard render-snips)
         
@@ -519,8 +519,17 @@
 
       (define original-plain-links (make-hash))
       (define original-for-syntax-links (make-hash))
+      (define roots '())
+      
+      (define pkg-restriction #f)
       (define/public (restrict-files-to-pkgs pkgs)
-        (error 'restrict-files-to-pkgs "not yet implemented"))
+        (unless (equal? pkgs pkg-restriction)
+          (set! pkg-restriction pkgs)
+          (begin-edit-sequence)
+          (remove-currrently-inserted)
+          (add-all)
+          (end-edit-sequence)
+          (render-snips)))
 
       (define path->pkg-cache (make-hash))
       (define all-pkgs #f)
@@ -625,6 +634,7 @@
         
         (set! max-lines #f)
         (compute-snip-require-phases)
+        (restrict-files-to-pkgs (set main-file-pkg))
         (render-snips)
         (end-edit-sequence))
       
@@ -648,32 +658,33 @@
       (define/public (add-connection name-original name-require require-depth)
         (unless max-lines
           (error 'add-connection "not in begin-adding-connections/end-adding-connections sequence"))
-        (let* ([original-snip (find/create-snip name-original)]
-               [require-snip (find/create-snip name-require)]
-               [original-level (send original-snip get-level)]
-               [require-level (send require-snip get-level)])
-          (let ([require-depth-key (list original-snip require-snip)])
-            (hash-set! require-depth-ht 
-                       require-depth-key
-                       (cons require-depth (hash-ref require-depth-ht require-depth-key '())))) 
-          (case require-depth 
-            [(0)
-             (hash-set! original-plain-links
-                        original-snip
-                        (set-add (hash-ref original-plain-links original-snip set) require-snip))
-             (add-links original-snip require-snip
-                        dark-pen light-pen
-                        dark-brush light-brush)]
-            [else
-             (hash-set! original-for-syntax-links
-                        original-snip
-                        (set-add (hash-ref original-for-syntax-links original-snip set) require-snip))
-             (add-links original-snip require-snip 
-                        dark-syntax-pen light-syntax-pen
-                        dark-syntax-brush light-syntax-brush)])
-          (if (send original-snip get-level)
-              (fix-snip-level require-snip (+ original-level 1))
-              (fix-snip-level original-snip 0))))
+        (define original-snip (find/create-snip name-original))
+        (define require-snip (find/create-snip name-require))
+        (set! roots (remove require-snip roots))
+        (let ([require-depth-key (list original-snip require-snip)])
+          (hash-set! require-depth-ht 
+                     require-depth-key
+                     (cons require-depth (hash-ref require-depth-ht require-depth-key '()))))
+        (define table-to-add-to (if (equal? require-depth 0) original-plain-links original-for-syntax-links))
+        (define previous-children (hash-ref table-to-add-to original-snip '()))
+        (unless (member require-snip previous-children)
+          (hash-set! table-to-add-to original-snip (cons require-snip previous-children))))
+
+      (define/private (add-for-syntax-link original-snip require-snip)
+        (add-links original-snip require-snip
+                   dark-pen light-pen
+                   dark-brush light-brush))
+
+      (define/private (add-regular-link original-snip require-snip)
+        (add-links original-snip require-snip
+                   dark-syntax-pen light-syntax-pen
+                   dark-syntax-brush light-syntax-brush))
+
+      (define/private (fix-snip-level-after-linking original-snip require-snip)
+        (define original-level (send original-snip get-level))
+        (if (send original-snip get-level)
+            (fix-snip-level require-snip (+ original-level 1))
+            (fix-snip-level original-snip 0)))
       
       ;; fix-snip-level : snip number -> void
       ;; moves the snip (and any children) to at least `new-level'
@@ -727,6 +738,7 @@
                          [else sc-unknown-pkg])]))
            (insert snip)
            (hash-set! snip-table name snip)
+           (set! roots (cons snip roots))
            snip)))
       
       ;; count-lines : string[filename] -> (union #f number)
@@ -765,24 +777,45 @@
              (unbox tb))))
 
       (define/private (remove-currrently-inserted)
+        (let loop ([snip (find-first-snip)])
+          (when snip
+            (for ([child (in-list (send snip get-children))])
+              (remove-links snip child))
+            (loop (send snip next))))
         (let loop ()
           (let ([snip (find-first-snip)])
             (when snip
               (send snip release-from-owner)
               (loop)))))
-      
+
       (define/private (add-all)
-        (let ([ht (make-hasheq)])
-          (for-each
-           (λ (snip)
-             (let loop ([snip snip])
-               (unless (hash-ref ht snip (λ () #f))
-                 (hash-set! ht snip #t)
-                 (insert snip)
-                 (for-each loop (send snip get-children)))))
-           (get-top-most-snips))))
+        (define visited (make-hash))
+        (for ([root (in-list roots)])
+          (when (set-member? pkg-restriction (send root get-pkg))
+            (insert root))
+          (let loop ([parent-to-link (if (set-member? pkg-restriction (send root get-pkg)) root #f)]
+                     [parent root]
+                     [through-for-syntax? #f])
+            (unless (hash-ref visited parent #f)
+              (hash-set! visited parent #t)
+              (define (continue child regular-child?)
+                (cond
+                  [(set-member? pkg-restriction (send child get-pkg))
+                   (insert child)
+                   (when parent-to-link
+                     (if (or (not regular-child?) through-for-syntax?)
+                         (add-for-syntax-link parent-to-link child)
+                         (add-regular-link parent-to-link child))
+                     (fix-snip-level-after-linking parent-to-link child))
+                   (loop child child #f)]
+                  [else
+                   (loop parent-to-link child (or (not through-for-syntax?) regular-child?))]))
+              (for ([child (in-list (hash-ref original-plain-links parent '()))])
+                (continue child #t))
+              (for ([child (in-list (hash-ref original-for-syntax-links parent '()))])
+                (continue child #f))))))
       
-      (define/private (get-top-most-snips) (hash-ref level-ht 0 (λ () null)))
+      (define/private (get-top-most-snips) (hash-ref level-ht 0 '()))
       
       ;; render-snips : -> void
       (define/public (render-snips)
