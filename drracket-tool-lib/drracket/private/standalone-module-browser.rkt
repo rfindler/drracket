@@ -315,12 +315,24 @@
   
   
   (define update-label void)
-
+  (define callback-queued?-sema (make-semaphore 1))
+  (define timer #f)
   (define (show-status str)
-    (parameterize ([current-eventspace progress-eventspace])
-      (queue-callback
-       (λ ()
-         (send progress-message set-label (gui-utils:trim-string str 200))))))
+    (semaphore-wait callback-queued?-sema)
+    (cond
+      [timer
+       (semaphore-post callback-queued?-sema)]
+      [else
+       (set! timer (new timer%
+                        [notify-callback
+                         (λ ()
+                           (semaphore-wait callback-queued?-sema)
+                           (set! timer #f)
+                           (semaphore-post callback-queued?-sema)
+                           (send progress-message set-label (gui-utils:trim-string str 200)))]
+                        [interval 50]
+                        [just-once? #t]))
+       (semaphore-post callback-queued?-sema)]))
   
   (define pasteboard (make-module-overview-pasteboard 
                       #f
