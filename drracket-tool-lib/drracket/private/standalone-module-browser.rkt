@@ -392,12 +392,20 @@
                             [(0) 'long]
                             [(1) 'very-long])))))))
 
+        (define pkg-choice-selections
+          (sort (set->list (send pasteboard get-pkgs)) string<?))
         (define pkg-choice
           (new list-box%
                [parent font/label-panel]
                [style '(vertical-label multiple)]
                [label "Visible Packages"]
-               [choices (sort (set->list (send pasteboard get-pkgs)) string<?)]))
+               [choices pkg-choice-selections]
+               [callback
+                (λ (lb evt)
+                  (define pkgs
+                    (for/set ([selection (in-list (send pkg-choice get-selections))])
+                      (list-ref pkg-choice-selections selection)))
+                  (send pasteboard restrict-files-to-pkgs pkgs))]))
         (send pkg-choice set-string-selection (send pasteboard get-main-file-pkg))
         
         (define ec (make-object overview-editor-canvas% vp pasteboard))
