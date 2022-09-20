@@ -482,7 +482,7 @@
                                          #:on-boxed-word-double-click
                                          [on-boxed-word-double-click #f])
   
-  (define level-ht (make-hasheq))
+  (define level-ht (make-hash))
   
   ;; snip-table : hash-table[sym -o> snip]
   (define snip-table (make-hash))
@@ -678,12 +678,12 @@
         (unless (member require-snip previous-children)
           (hash-set! table-to-add-to original-snip (cons require-snip previous-children))))
 
-      (define/private (add-for-syntax-link original-snip require-snip)
+      (define/private (add-regular-link original-snip require-snip)
         (add-links original-snip require-snip
                    dark-pen light-pen
                    dark-brush light-brush))
 
-      (define/private (add-regular-link original-snip require-snip)
+      (define/private (add-for-syntax-link original-snip require-snip)
         (add-links original-snip require-snip
                    dark-syntax-pen light-syntax-pen
                    dark-syntax-brush light-syntax-brush))
@@ -798,6 +798,7 @@
 
       (define/private (add-all)
         (define visited (make-hash))
+        (reset-levels)
         (for ([root (in-list roots)])
           (when (set-member? pkg-restriction (send root get-pkg))
             (insert root))
@@ -806,22 +807,28 @@
                      [through-for-syntax? #f])
             (unless (hash-ref visited parent #f)
               (hash-set! visited parent #t)
-              (define (continue child regular-child?)
+              (define (continue child for-syntax-child?)
                 (cond
                   [(set-member? pkg-restriction (send child get-pkg))
                    (insert child)
                    (when parent-to-link
-                     (if (or (not regular-child?) through-for-syntax?)
+                     (if (or for-syntax-child? through-for-syntax?)
                          (add-for-syntax-link parent-to-link child)
                          (add-regular-link parent-to-link child))
                      (fix-snip-level-after-linking parent-to-link child))
                    (loop child child #f)]
                   [else
-                   (loop parent-to-link child (or (not through-for-syntax?) regular-child?))]))
+                   (loop parent-to-link child (or through-for-syntax? for-syntax-child?))]))
               (for ([child (in-list (hash-ref original-plain-links parent '()))])
-                (continue child #t))
+                (continue child #f))
               (for ([child (in-list (hash-ref original-for-syntax-links parent '()))])
-                (continue child #f))))))
+                (continue child #t))))))
+
+      (define/private (reset-levels)
+        (for ([(level snips) (in-hash level-ht)])
+          (for ([snip (in-list snips)])
+            (send snip reset-level)))
+        (set! level-ht (make-hash)))
       
       (define/private (get-top-most-snips) (hash-ref level-ht 0 '()))
       
@@ -951,17 +958,20 @@
   
   (define (level-mixin %)
     (class %
-      (field (level #f))
+      (define level #f)
+      (define/public (reset-level) (set! level #f))
       (define/public (get-level) level)
       (define/public (set-level _l) 
         (when level
           (hash-set! level-ht level
-                     (remq this (hash-ref level-ht level))))
+                     (for/list ([snip (in-list (hash-ref level-ht level))]
+                                #:unless (object=? snip this))
+                       snip)))
         (set! level _l)
         (hash-set! level-ht level 
-                   (cons this (hash-ref level-ht level (λ () null)))))
+                   (cons this (hash-ref level-ht level '()))))
       
-      (super-instantiate ())))
+      (super-new)))
   
   (define (boxed-word-snip-mixin %)
     (class* % (boxed-word-snip<%>)
