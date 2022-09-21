@@ -381,6 +381,19 @@
             (callback
              (λ (x y)
                (send pasteboard set-label-font-size (send font-size-gauge get-value))))))
+        (define pkg-choice-selections
+          (sort (set->list (send pasteboard get-pkgs)) string<?))
+        (define pkg-choice
+          (new menu-based-set-choice%
+               [parent font/label-panel]
+               [label "Visible Packages"]
+               [choices pkg-choice-selections]
+               [callback
+                (λ (lb evt)
+                  (define pkgs
+                    (for/set ([selection (in-list (send pkg-choice get-selections))])
+                      (list-ref pkg-choice-selections selection)))
+                  (send pasteboard restrict-files-to-pkgs pkgs))]))
         (define module-browser-name-length-choice
           (new choice%
                (parent font/label-panel)
@@ -403,21 +416,6 @@
                           (case selection
                             [(0) 'long]
                             [(1) 'very-long])))))))
-
-        (define pkg-choice-selections
-          (sort (set->list (send pasteboard get-pkgs)) string<?))
-        (define pkg-choice
-          (new list-box%
-               [parent font/label-panel]
-               [style '(vertical-label multiple)]
-               [label "Visible Packages"]
-               [choices pkg-choice-selections]
-               [callback
-                (λ (lb evt)
-                  (define pkgs
-                    (for/set ([selection (in-list (send pkg-choice get-selections))])
-                      (list-ref pkg-choice-selections selection)))
-                  (send pasteboard restrict-files-to-pkgs pkgs))]))
         (send pkg-choice set-string-selection (send pasteboard get-main-file-pkg))
         
         (define ec (make-object overview-editor-canvas% vp pasteboard))
@@ -484,6 +482,55 @@
         
         (send frame show #t)))))
 
+(define menu-based-set-choice%
+  (class canvas%
+    (init-field label choices callback)
+    (super-new)
+    (inherit get-client-size popup-menu
+             min-width min-height get-dc
+             stretchable-width stretchable-height)
+    (let ()
+      (define-values (tw th _1 _2) (send (get-dc) get-text-extent label))
+      (min-width (inexact->exact (ceiling tw)))
+      (min-height (inexact->exact (ceiling th)))
+      (stretchable-width #f)
+      (stretchable-height #f))
+    (define selected (make-hash))
+    (for ([choice (in-list choices)])
+      (hash-set! selected choice #f))
+    (define/override (on-paint)
+      (define dc (get-dc))
+      (define-values (cw ch) (get-client-size))
+      (define-values (tw th _1 _2) (send dc get-text-extent label))
+      (send dc draw-text
+            label
+            (- (/ cw 2) (/ tw 2))
+            (- (/ th 2) (/ th 2))))
+    (define/override (on-event evt)
+      (super on-event evt)
+      (when (send evt button-down?)
+        (define-values (cw ch) (get-client-size))
+        (define menu (new popup-menu%))
+        (for ([choice (in-list choices)])
+          (define item
+            (new checkable-menu-item%
+                 [parent menu]
+                 [label choice]
+                 [callback (λ (item evt)
+                             (hash-set! selected choice (not (hash-ref selected choice)))
+                             (callback this evt))]))
+          (send item check (hash-ref selected choice)))
+        (popup-menu menu 0 ch)))
+
+    (define/public (set-string-selection s)
+      (for ([choice (in-list choices)])
+        (hash-set! selected choice (equal? s choice))))
+    (define/public (get-selections)
+      (filter
+       values
+       (for/list ([choice (in-list choices)]
+                  [i (in-naturals)])
+         (and (hash-ref selected choice) i))))))
 ;; make-module-overview-pasteboard : boolean
 ;;                                   ((union #f snip) -> void)
 ;;                                -> (union string pasteboard)
