@@ -41,8 +41,10 @@
                          (λ (x) (memq x '(0 1 2 3))))
 
 (define-struct req (r-mpi))
-;; type req = (make-req [result from resolve-module-path-index] -- except only when it has a path
-;;                      )
+;; type req = (make-req [result from resolve-module-path-index]
+;;                   -- except only when it has a path
+;;                   -- and with the filename inside cleaned up
+;;                      (simplified and .ss/.rkt matching the filesystem)
 
 (provide process-program-unit
          process-program-import^
@@ -274,12 +276,20 @@
     (for*/list ([dr (in-list direct-requires)]
                 [r-mpi (in-value (and (module-path-index? dr)
                                       (resolve-module-path-index dr base)))]
-                #:when (to-path r-mpi))
-      (define path (build-module-filename (to-path r-mpi) #t))
+                #:when (or (path? r-mpi) (pair? r-mpi)))
+      (define r-mpi-filename
+        (match r-mpi
+          [(? path-string?) r-mpi]
+          [`(submod ,p ,_ ...) p]))
+      (build-module-filename r-mpi-filename #t)
+      (define true-filename #f)
+      (get-module-path r-mpi-filename
+                       #:choose (λ (src _1 _2) (set! true-filename src) #f)
+                       )
       (make-req (match r-mpi
-                  [(? path?) (simplify-path r-mpi)]
-                  [`(submod ,p ,submods ...) `(submod ,(simplify-path p) ,@submods)]))))
-  
+                  [(? path?) (simplify-path true-filename)]
+                  [`(submod ,p ,submods ...) `(submod ,(simplify-path true-filename) ,@submods)]))))
+
   (define (to-path r-mpi)
     (match r-mpi
       [(? path? p) p]
@@ -798,7 +808,7 @@
                   [pb this]
                   [filename filename]
                   [pkg (cond
-                         [(path->pkg filename #:cache path->pkg-cache)
+                         [(and filename (path->pkg filename #:cache path->pkg-cache))
                           => values]
                          [(is-in-main-collects? filename)
                           sc-main-collects]
