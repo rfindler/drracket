@@ -3878,9 +3878,14 @@
               definitions-text
               0
               (send definitions-text last-position))
-             (λ (str) (update-status-line 
-                       'plt:module-browser 
-                       (gui-utils:trim-string (format module-browser-progress-constant str) 200)))
+             (let ([n 0])
+               (λ (str)
+                 (when (zero? (modulo n 20))
+                   (update-status-line
+                    'plt:module-browser
+                    (gui-utils:trim-string (format module-browser-progress-constant str)
+                                           200)))
+                 (set! n (+ n 1))))
              (λ (user-thread user-custodian)
                (send mod-tab set-breakables user-thread user-custodian)))
             (send mod-tab set-breakables old-break-thread old-custodian)
