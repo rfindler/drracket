@@ -12,6 +12,7 @@
          framework/gui-utils
          string-constants
          mrlib/graph
+         mrlib/panel-wob
          racket/unit
          racket/async-channel
          racket/match
@@ -381,16 +382,6 @@
         (define font/label-panel (new horizontal-panel%
                                       [parent vp]
                                       [stretchable-height #f]))
-        (define font-size-gauge
-          (instantiate slider% ()
-            (label font-size-gauge-label)
-            (min-value 1)
-            (max-value 72)
-            (init-value (preferences:get 'drracket:module-overview:label-font-size))
-            (parent font/label-panel)
-            (callback
-             (λ (x y)
-               (send pasteboard set-label-font-size (send font-size-gauge get-value))))))
         (define pkg-choice-selections
           (sort (set->list (send pasteboard get-pkgs)) string<?))
         (define pkg-choice
@@ -404,6 +395,16 @@
                     (for/set ([selection (in-list (send pkg-choice get-selections))])
                       (list-ref pkg-choice-selections selection)))
                   (send pasteboard restrict-files-to-pkgs pkgs))]))
+        (define font-size-gauge
+          (instantiate slider% ()
+            (label font-size-gauge-label)
+            (min-value 1)
+            (max-value 72)
+            (init-value (preferences:get 'drracket:module-overview:label-font-size))
+            (parent font/label-panel)
+            (callback
+             (λ (x y)
+               (send pasteboard set-label-font-size (send font-size-gauge get-value))))))
         (define module-browser-name-length-choice
           (new choice%
                (parent font/label-panel)
@@ -495,14 +496,17 @@
 (define menu-based-set-choice%
   (class canvas%
     (init-field label choices callback)
-    (super-new)
-    (inherit get-client-size popup-menu
+    (define in? #f)
+    (super-new [style '(transparent)])
+    (inherit get-client-size popup-menu refresh
              min-width min-height get-dc
              stretchable-width stretchable-height)
     (let ()
+      (send (get-dc) set-font normal-control-font)
+      (send (get-dc) set-smoothing 'smoothed)
       (define-values (tw th _1 _2) (send (get-dc) get-text-extent label))
-      (min-width (inexact->exact (ceiling tw)))
-      (min-height (inexact->exact (ceiling th)))
+      (min-width (+ menu-based-set-choice-inset (inexact->exact (ceiling tw)) menu-based-set-choice-inset))
+      (min-height (+ menu-based-set-choice-inset (inexact->exact (ceiling th)) menu-based-set-choice-inset))
       (stretchable-width #f)
       (stretchable-height #f))
     (define selected (make-hash))
@@ -512,25 +516,43 @@
       (define dc (get-dc))
       (define-values (cw ch) (get-client-size))
       (define-values (tw th _1 _2) (send dc get-text-extent label))
+      (when in?
+        (define color (if (white-on-black-panel-scheme?) 0.5 0.2))
+        (send dc set-pen "black" 1 'transparent)
+        (send dc set-brush (get-label-foreground-color) 'solid)
+        (define alpha (send dc get-alpha))
+        (send dc set-alpha color)
+        (send dc draw-rounded-rectangle 0 0 cw ch)
+        (send dc set-alpha alpha))
       (send dc draw-text
             label
             (- (/ cw 2) (/ tw 2))
-            (- (/ th 2) (/ th 2))))
+            (- (/ ch 2) (/ th 2))))
     (define/override (on-event evt)
       (super on-event evt)
-      (when (send evt button-down?)
-        (define-values (cw ch) (get-client-size))
-        (define menu (new popup-menu%))
-        (for ([choice (in-list choices)])
-          (define item
-            (new checkable-menu-item%
-                 [parent menu]
-                 [label choice]
-                 [callback (λ (item evt)
-                             (hash-set! selected choice (not (hash-ref selected choice)))
-                             (callback this evt))]))
-          (send item check (hash-ref selected choice)))
-        (popup-menu menu 0 ch)))
+      (cond
+        [(send evt entering?)
+         (set-in? #t)]
+        [(send evt leaving?)
+         (set-in? #f)]
+        [(send evt button-down?)
+         (define-values (cw ch) (get-client-size))
+         (define menu (new popup-menu%))
+         (for ([choice (in-list choices)])
+           (define item
+             (new checkable-menu-item%
+                  [parent menu]
+                  [label choice]
+                  [callback (λ (item evt)
+                              (hash-set! selected choice (not (hash-ref selected choice)))
+                              (callback this evt))]))
+           (send item check (hash-ref selected choice)))
+         (popup-menu menu 0 ch)]))
+
+    (define/private (set-in? _in?)
+      (unless (equal? in? _in?)
+        (set! in? _in?)
+        (refresh)))
 
     (define/public (set-string-selection s)
       (for ([choice (in-list choices)])
@@ -541,6 +563,8 @@
        (for/list ([choice (in-list choices)]
                   [i (in-naturals)])
          (and (hash-ref selected choice) i))))))
+
+(define menu-based-set-choice-inset 4)
 ;; make-module-overview-pasteboard : boolean
 ;;                                   ((union #f snip) -> void)
 ;;                                -> (union string pasteboard)
