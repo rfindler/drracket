@@ -21,6 +21,7 @@
          net/url
          
          drracket/private/drsig
+         drracket/private/standalone-module-browser
          "insulated-read-language.rkt"
          "insert-large-letters.rkt"
          "get-defs.rkt"
@@ -3761,6 +3762,7 @@
              [module-browser-name-length-choice #f]
              [module-browser-pb #f]
              [module-browser-menu-item 'module-browser-menu-item-unset])
+      (define module-browser-pkg-set-choice #f)
       
       (inherit open-status-line close-status-line update-status-line)
       
@@ -3825,8 +3827,14 @@
                           (update-module-browser-name-length selection))))))
           (update-module-browser-name-length 
            (preferences:get 'drracket:module-browser:name-length))
+
+          (set! module-browser-pkg-set-choice
+                (new module-browser-pkg-set-choice%
+                     [parent module-browser-panel]
+                     [pasteboard #f]))
+          (send module-browser-pkg-set-choice stretchable-width #t)
           
-          (set! module-browser-button 
+          (set! module-browser-button
                 (new button%
                      (parent module-browser-panel)
                      (label refresh)
@@ -3888,6 +3896,7 @@
                  (set! n (+ n 1))))
              (λ (user-thread user-custodian)
                (send mod-tab set-breakables user-thread user-custodian)))
+            (send module-browser-pkg-set-choice set-pasteboard module-browser-pb)
             (send mod-tab set-breakables old-break-thread old-custodian)
             (send mod-tab enable-evaluation)
             (send module-browser-button enable #t)

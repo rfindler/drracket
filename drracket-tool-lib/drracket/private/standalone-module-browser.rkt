@@ -29,15 +29,12 @@
 
 (provide standalone-module-overview/file
          module-overview/file
-         make-module-overview-pasteboard)
+         make-module-overview-pasteboard
+         module-browser-pkg-set-choice%)
 
 (preferences:set-default 'drracket:module-overview:label-font-size 12 number?)
 (preferences:set-default 'drracket:module-overview:window-height 500 number?)
 (preferences:set-default 'drracket:module-overview:window-width 500 number?)
-(preferences:set-default 'drracket:module-browser:hide-paths '(lib)
-                         (λ (x)
-                           (and (list? x)
-                                (andmap symbol? x))))
 (preferences:set-default 'drracket:module-browser:name-length 1 
                          (λ (x) (memq x '(0 1 2 3))))
 
@@ -63,6 +60,7 @@
 (define pkg-constant "pkg: ~a")
 (define sc-main-collects "Main Collects")
 (define sc-unknown-pkg "Unknown Pkg")
+(define sc-visible-pkgs "Visible Packages")
 (define filename-constant (string-constant module-browser-filename-format))
 (define font-size-gauge-label (string-constant module-browser-font-size-gauge-label))
 (define progress-label (string-constant module-browser-progress-label))
@@ -382,19 +380,10 @@
         (define font/label-panel (new horizontal-panel%
                                       [parent vp]
                                       [stretchable-height #f]))
-        (define pkg-choice-selections
-          (sort (set->list (send pasteboard get-pkgs)) string<?))
         (define pkg-choice
-          (new menu-based-set-choice%
+          (new module-browser-pkg-set-choice%
                [parent font/label-panel]
-               [label "Visible Packages"]
-               [choices pkg-choice-selections]
-               [callback
-                (λ (lb evt)
-                  (define pkgs
-                    (for/set ([selection (in-list (send pkg-choice get-selections))])
-                      (list-ref pkg-choice-selections selection)))
-                  (send pasteboard restrict-files-to-pkgs pkgs))]))
+               [pasteboard pasteboard]))
         (define font-size-gauge
           (instantiate slider% ()
             (label font-size-gauge-label)
@@ -493,29 +482,47 @@
         
         (send frame show #t)))))
 
-(define menu-based-set-choice%
+(define module-browser-pkg-set-choice%
   (class canvas%
-    (init-field label choices callback)
+    (init-field pasteboard)
+    (define choices '())
+    (define selected (make-hash))
     (define in? #f)
     (super-new [style '(transparent)])
+    (when pasteboard (choices-refreshed))
     (inherit get-client-size popup-menu refresh
              min-width min-height get-dc
              stretchable-width stretchable-height)
     (let ()
       (send (get-dc) set-font normal-control-font)
       (send (get-dc) set-smoothing 'smoothed)
-      (define-values (tw th _1 _2) (send (get-dc) get-text-extent label))
+      (define-values (tw th _1 _2) (send (get-dc) get-text-extent sc-visible-pkgs))
       (min-width (+ menu-based-set-choice-inset (inexact->exact (ceiling tw)) menu-based-set-choice-inset))
       (min-height (+ menu-based-set-choice-inset (inexact->exact (ceiling th)) menu-based-set-choice-inset))
       (stretchable-width #f)
       (stretchable-height #f))
-    (define selected (make-hash))
-    (for ([choice (in-list choices)])
-      (hash-set! selected choice #f))
+
+    (define/public (set-pasteboard _pb)
+      (set! pasteboard _pb)
+      (choices-refreshed))
+    (define/public (choices-refreshed)
+      (unless pasteboard (error 'choices-refreshed "pasteboard hasn't been set yet"))
+      (set! selected (make-hash))
+      (set! choices (sort (set->list (send pasteboard get-pkgs)) string<?))
+      (for ([choice (in-list choices)])
+        (hash-set! selected choice #f))
+      (for ([choice (in-set (send pasteboard get-pkg-restriction))])
+        (hash-set! selected choice #t)))
+    (define/private (update-the-pasteboard)
+      (define pkgs
+        (for/set ([selection (in-list (get-selections))])
+          (list-ref choices selection)))
+      (send pasteboard restrict-files-to-pkgs pkgs))
+
     (define/override (on-paint)
       (define dc (get-dc))
       (define-values (cw ch) (get-client-size))
-      (define-values (tw th _1 _2) (send dc get-text-extent label))
+      (define-values (tw th _1 _2) (send dc get-text-extent sc-visible-pkgs))
       (when in?
         (define color (if (white-on-black-panel-scheme?) 0.5 0.2))
         (send dc set-pen "black" 1 'transparent)
@@ -525,7 +532,7 @@
         (send dc draw-rounded-rectangle 0 0 cw ch)
         (send dc set-alpha alpha))
       (send dc draw-text
-            label
+            sc-visible-pkgs
             (- (/ cw 2) (/ tw 2))
             (- (/ ch 2) (/ th 2))))
     (define/override (on-event evt)
@@ -536,6 +543,9 @@
         [(send evt leaving?)
          (set-in? #f)]
         [(send evt button-down?)
+         (unless pasteboard
+           (error 'module-browser-pkg-set-choice%
+                  "pasteboard hasn't been set yet but we got a button down event"))
          (define-values (cw ch) (get-client-size))
          (define menu (new popup-menu%))
          (for ([choice (in-list choices)])
@@ -545,7 +555,7 @@
                   [label choice]
                   [callback (λ (item evt)
                               (hash-set! selected choice (not (hash-ref selected choice)))
-                              (callback this evt))]))
+                              (update-the-pasteboard))]))
            (send item check (hash-ref selected choice)))
          (popup-menu menu 0 ch)]))
 
@@ -621,8 +631,10 @@
       (define original-plain-links (make-hash))
       (define original-for-syntax-links (make-hash))
       (define roots '())
-      
+
+      ;; (or/c #f (set/c string?)) -- #f when uninitialized
       (define pkg-restriction #f)
+      (define/public (get-pkg-restriction) pkg-restriction)
       (define/public (restrict-files-to-pkgs pkgs)
         (unless (equal? pkgs pkg-restriction)
           (set! pkg-restriction pkgs)
