@@ -53,7 +53,7 @@
 (define module-browser-progress-constant (string-constant module-browser-progress))
 (define status-compiling-definitions (string-constant module-browser-compiling-defns))
 (define show-planet-paths (string-constant module-browser-show-planet-paths/short))
-(define refresh (string-constant module-browser-refresh))
+(define module-browser-refresh (string-constant module-browser-refresh))
 
 (define oprintf
   (let ([op (current-output-port)])
@@ -3837,7 +3837,7 @@
           (set! module-browser-button
                 (new button%
                      (parent module-browser-panel)
-                     (label refresh)
+                     (label module-browser-refresh)
                      (callback (λ (x y) (update-module-browser-pane)))
                      (stretchable-width #t))))
         

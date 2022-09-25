@@ -58,13 +58,12 @@
 (define original-error-port (current-error-port))
 
 (define pkg-constant "pkg: ~a")
-(define sc-main-collects "Main Collects")
-(define sc-unknown-pkg "Unknown Pkg")
-(define sc-visible-pkgs "Visible Packages")
+(define sc-main-collects (string-constant module-browser-main-collects))
+(define sc-unknown-pkg (string-constant module-browser-unknown-pkg))
+(define sc-visible-pkgs (string-constant module-browser-visible-pkgs))
 (define filename-constant (string-constant module-browser-filename-format))
 (define font-size-gauge-label (string-constant module-browser-font-size-gauge-label))
 (define progress-label (string-constant module-browser-progress-label))
-(define laying-out-graph-label (string-constant module-browser-laying-out-graph-label))
 (define open-file-format (string-constant module-browser-open-file-format))
 
 (define (set-box/f b v) (when (box? b) (set-box! b v)))
@@ -775,7 +774,7 @@
         (define require-snip (find/create-snip name-require))
         (set! roots (remove require-snip roots))
         (let ([require-depth-key (list original-snip require-snip)])
-          (hash-set! require-depth-ht 
+          (hash-set! require-depth-ht
                      require-depth-key
                      (cons require-depth (hash-ref require-depth-ht require-depth-key '()))))
         (define table-to-add-to (if (equal? require-depth 0) original-plain-links original-for-syntax-links))
