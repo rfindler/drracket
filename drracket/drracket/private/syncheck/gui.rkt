@@ -45,6 +45,7 @@ If the namespace does not, they are colored the unbound color.
          "intf.rkt"
          "local-member-names.rkt"
          "../tooltip.rkt"
+         "ann.rkt"
          "blueboxes-gui.rkt"
          drracket/private/syncheck/syncheck-intf
          drracket/private/syncheck/colors
@@ -66,10 +67,6 @@ If the namespace does not, they are colored the unbound color.
 (define jump-to-definition (string-constant cs-jump-to-definition))
 
 (define cs-check-syntax-mode (string-constant cs-check-syntax-mode))
-(define cs-check-syntax-background-colors
-  (hash 'matching-identifiers 'drracket:syncheck:matching-identifiers
-        'unused-identifier 'drracket:syncheck:unused-identifier
-        'document-identifier 'drracket:syncheck:document-identifier))
 (define cs-mode-menu-show-my-obligations (string-constant cs-mode-menu-show-my-obligations))
 (define cs-mode-menu-show-client-obligations (string-constant cs-mode-menu-show-client-obligations))
 (define cs-mode-menu-show-syntax (string-constant cs-mode-menu-show-syntax))
@@ -247,30 +244,9 @@ If the namespace does not, they are colored the unbound color.
     
     (define-struct graphic (pos* locs->thunks draw-fn click-fn))
     
-    (define-struct arrow () #:mutable #:transparent)
-    (define-struct (var-arrow arrow)
-      (start-text start-pos-left start-pos-right start-px start-py
-                  end-text end-pos-left end-pos-right end-px end-py
-                  actual? level require-arrow? name-dup?)
-      ;; level is one of 'lexical, 'top-level, 'import
-      #:transparent)
-    (define-struct (tail-arrow arrow) (from-text from-pos to-text to-pos) #:transparent)
-    
-    (define-struct tooltip-info (text pos-left pos-right msg) #:transparent)
-    
     ;; set : (uf-set (list/c source position span))
     ;; name-dup? : symbol? -> boolean?
     (define-struct identifier-location-set (set name-dup?) #:transparent)
-        
-    ;; color : (or/c (is-a?/c color%) string? color-prefs:color-scheme-color-name?)
-    ;; text: text:basic<%>
-    ;; start, fin: number
-    ;; used to represent regions to highlight when passing the mouse over the syncheck window
-    (define-struct colored-region (color text start fin) #:transparent)
-    
-    ;; id : symbol  --  the nominal-source-id from identifier-binding
-    ;; filename : path
-    (define-struct def-link (id filename submods) #:transparent)
 
     (define-struct prefixable-reference (id-text id-start id-end))
     
@@ -400,8 +376,9 @@ If the namespace does not, they are colored the unbound color.
             
     (define make-syncheck-text%
       (λ (super%)
-        (let* ([cursor-arrow (make-object cursor% 'arrow)])
-          (class* (docs-text-defs-mixin super%) (syncheck-text<%>)
+        (define cursor-arrow (make-object cursor% 'arrow))
+        (docs-text-defs-mixin
+          (class* super% ()
             (inherit set-cursor get-admin invalidate-bitmap-cache set-position
                      get-pos/text-dc-location position-location
                      get-canvas last-position dc-location-to-editor-location
@@ -409,120 +386,12 @@ If the namespace does not, they are colored the unbound color.
                      highlight-range unhighlight-range
                      paragraph-end-position first-line-currently-drawn-specially?
                      line-end-position position-line
-                     syncheck:add-docs-range syncheck:add-require-candidate get-padding)
-            
-            ;; arrow-records : (U #f hash[text% => arrow-record])
-            ;; arrow-record = interval-map[(listof arrow-entry)]
-            ;; arrow-entry is one of
-            ;;   - (cons (U #f sym) (menu -> void))
-            ;;   - def-link
-            ;;   - tail-link
-            ;;   - arrow
-            ;;   - string
-            ;;   - colored-region
-            (define/private (get-arrow-record text)
-              (unless (object? text)
-                (error 'get-arrow-record "expected a text as the second argument, got ~e" text))
-              (hash-ref! arrow-records text (lambda () (make-interval-map))))
+                     get-padding)
 
-            (define arrow-records #f)
+            (define annotations #f)
 
-            (define/private (fetch-arrow-records txt pos)
-              (and arrow-records
-                   (let ([im (hash-ref arrow-records txt #f)]) 
-                     (if im
-                         (interval-map-ref im pos '())
-                         '()))))
-            
-            (define/public (dump-arrow-records)
-              (cond
-                [arrow-records
-                 (for ([(k v) (in-hash arrow-records)])
-                   (printf "\n\n~s:\n" k)
-                   (let loop ([it (interval-map-iterate-first v)])
-                     (when it
-                       (printf "~s =>\n" (interval-map-iterate-key v it))
-                       (for ([v (in-list (interval-map-iterate-value v it))])
-                         (printf "  ~s\n" v))
-                       (printf "\n")
-                       (loop (interval-map-iterate-next v it)))))]
-                [else
-                 (printf "arrow-records empty\n")]))
-            
             ;; cleanup-texts : (or/c #f (listof text))
             (define cleanup-texts #f)
-            
-            ;; definition-targets : hash-table[(list symbol[id-name] (listof symbol[submodname])) 
-            ;;                                 -o> (list text number number)]
-            (define definition-targets (make-hash))
-            
-            
-            ;; bindings-table : hash-table[(list text number number)
-            ;;                             -o> (setof (list text number number))]
-            ;; this is a private field
-            (define bindings-table (make-hash))
-
-            ;; unused-require-table : hash-table[(list text number number) -o> #t]
-            ;; this table records if a given require appears to be unused
-            (define unused-require-table (make-hash))
-            
-            ;; add-to-bindings-table : text number number text number number -> boolean
-            ;; results indicates if the binding was added to the table. It is added, unless
-            ;;  1) it is already there, or
-            ;;  2) it is a link to itself
-            (define/private (add-to-bindings-table start-text start-left start-right
-                                                   end-text end-left end-right)
-              (cond
-                [(and (object=? start-text end-text)
-                      (= start-left end-left)
-                      (= start-right end-right))
-                 #f]
-                [else
-                 (define key (list start-text start-left start-right))
-                 (define priors (hash-ref bindings-table key (λ () (set))))
-                 (define new (list end-text end-left end-right))
-                 (cond
-                   [(set-member? priors new)
-                    #f]
-                   [else
-                    (hash-set! bindings-table key (set-add priors new))
-                    #t])]))
-
-            ;; prefix-table : hash-table[(list text number number) -o> #t]
-            ;;   this table records if a given require appears to have already a prefix
-            (define prefix-table (make-hash))
-            
-            ;; for use in the automatic test suite (both)
-            (define/public (syncheck:get-bindings-table [tooltips? #f])
-              (cond
-                [tooltips?
-                 (define unsorted
-                   (apply 
-                    append
-                    (for/list ([(k interval-map) (in-hash arrow-records)])
-                      (apply
-                       append
-                       (dict-map
-                        interval-map
-                        (λ (key x)
-                          (for/list ([x (in-list x)]
-                                     #:when (tooltip-info? x))
-                            (list (tooltip-info-pos-left x)
-                                  (tooltip-info-pos-right x)
-                                  (tooltip-info-msg x)))))))))
-                 (define (compare l1 l2)
-                   (cond
-                     [(equal? (list-ref l1 0) (list-ref l2 0))
-                      (cond
-                        [(equal? (list-ref l1 2) (list-ref l2 2))
-                         (string<=? (list-ref l1 2) (list-ref l2 2))]
-                        [else
-                         (< (list-ref l1 1) (list-ref l2 1))])]
-                     [else
-                      (< (list-ref l1 0) (list-ref l2 0))]))
-                 (sort unsorted compare)]
-                [else
-                 bindings-table]))
             
             ;; compare-bindings : (list text number number) (list text number number) -> boolean
             ;; compares two bindings in the sets inside the bindings table, returning
@@ -629,21 +498,19 @@ If the namespace does not, they are colored the unbound color.
             
             ;; syncheck:init-arrows : -> void
             (define/public (syncheck:init-arrows)
+              (error 'syncheck:init-arrows "need to update for annotations; what's needed?")
               (set! tacked-hash-table (make-hasheq))
-              (set! arrow-records (make-hasheq))
-              (set! bindings-table (make-hash))
-              (set! cleanup-texts '())
-              (set! definition-targets (make-hash))
-              (set! unused-require-table (make-hash)))
+              (set! cleanup-texts '()))
             
             (define/public (syncheck:arrows-visible?)
-              (or arrow-records cursor-pos cursor-text cursor-eles cursor-tooltip))
+              (error 'syncheck:arrows-visible? "is this right? what is current-annotations doing here?")
+              (or current-annotations
+                  cursor-pos cursor-text cursor-eles cursor-tooltip))
             
             ;; syncheck:clear-arrows : -> void
             (define/public (syncheck:clear-arrows)
               (when (syncheck:arrows-visible?)
                 (set! tacked-hash-table #f)
-                (set! arrow-records #f)
                 (when (update-latent-arrows #f #f)
                   (update-drawn-arrows))
                 (syncheck:clear-coloring)
@@ -655,96 +522,6 @@ If the namespace does not, they are colored the unbound color.
                           cleanup-texts))
               (set! cleanup-texts #f))
             
-            ;; syncheck:apply-style/remember : (is-a?/c text%) number number style% symbol -> void
-            (define/public (syncheck:apply-style/remember txt start finish style)
-              (add-to-cleanup/apply-style txt start finish style))
-            
-            (define/public (syncheck:color-range source start finish style-name)
-              (when (is-a? source text%)
-                (define (apply-style/remember ed start finish style)
-                  (let ([outermost (find-outermost-editor ed)])
-                    (and (is-a? outermost syncheck-text<%>)
-                         (send outermost syncheck:apply-style/remember ed start finish style))))
-                
-                (define (find-outermost-editor ed)
-                  (let loop ([ed ed])
-                    (let ([admin (send ed get-admin)])
-                      (if (is-a? admin editor-snip-editor-admin<%>)
-                          (let* ([enclosing-snip (send admin get-snip)]
-                                 [enclosing-snip-admin (send enclosing-snip get-admin)])
-                            (loop (send enclosing-snip-admin get-editor)))
-                          ed))))
-                
-                (let ([style (send (send source get-style-list)
-                                   find-named-style
-                                   style-name)])
-                  (apply-style/remember source start finish style))))
-
-            ;; add-to-cleanup/apply-style : (is-a?/c text%) number number style% symbol -> boolean
-            (define/private (add-to-cleanup/apply-style txt start finish style)
-              (cond
-                [cleanup-texts
-                 (unless (memq txt cleanup-texts)
-                   (send txt freeze-colorer)
-                   (set! cleanup-texts (cons txt cleanup-texts)))
-                 (send txt change-style style start finish #f)
-                 #t]
-                [else #f]))
-            
-            (define/public (syncheck:add-require-open-menu text start-pos end-pos file)
-              (define (make-require-open-menu menu)
-                (define-values (base name dir?) (split-path file))
-                (new menu-item%
-                     (label (fw:gui-utils:format-literal-label
-                             (string-constant cs-open-file) (path->string name)))
-                     (parent menu)
-                     (callback (λ (x y) (fw:handler:edit-file file))))
-                (void))
-              (syncheck:add-menu text start-pos end-pos file make-require-open-menu)
-              (syncheck:add-require-candidate file))
-            
-            (define/public (syncheck:add-docs-menu text start-pos end-pos id
-                                                   the-label
-                                                   path
-                                                   definition-tag
-                                                   url-tag)
-              (syncheck:add-docs-range start-pos end-pos definition-tag path url-tag)
-              (define (visit-docs-url)
-                (define url (path->url path))
-                (define url2 (if url-tag
-                                 (make-url (url-scheme url)
-                                           (url-user url)
-                                           (url-host url)
-                                           (url-port url)
-                                           (url-path-absolute? url)
-                                           (url-path url)
-                                           (url-query url)
-                                           url-tag)
-                                 url))
-                (send-url (url->string url2)))
-              (syncheck:add-menu 
-               text start-pos end-pos id
-               (λ (menu)
-                 (new menu-item% 
-                      [parent menu]
-                      [label (gui-utils:format-literal-label "~a" the-label)]
-                      [callback
-                       (λ (x y)
-                         (visit-docs-url))]))))
-            
-            (define/public (syncheck:add-definition-target/phase-level+space source start-pos end-pos id mods phase-level)
-              (syncheck:add-definition-target source start-pos end-pos id mods))
-            (define/public (syncheck:add-definition-target source start-pos end-pos id mods)
-              (hash-set! definition-targets (list id mods) (list source start-pos end-pos)))
-            ;; syncheck:find-definition-target 
-            ;;  : sym (listof sym) -> (or/c (list/c text number number) #f)
-            (define/public (syncheck:find-definition-target id mods)
-              (hash-ref definition-targets (list id mods) #f))
-            
-            ;; no longer used, but must be here for backwards compatibility
-            (define/public (syncheck:add-rename-menu id to-be-renamed/poss name-dup?) (void))
-            (define/public (syncheck:add-id-set to-be-renamed/poss name-dup?) (void))
-
             (define/public (syncheck:rename-identifier text)
               (define canvas (send text get-canvas))
               
@@ -765,18 +542,16 @@ If the namespace does not, they are colored the unbound color.
             
             
             (define/public (syncheck:tack/untack-arrows text)
-              (when arrow-records
-                (define arrow-record (hash-ref arrow-records text #f))
+              (when annotations
                 (define (find-arrows pos)
-                  (define vec-ents (interval-map-ref arrow-record pos null))
+                  (define vec-ents (send annotations get-arrows text pos))
                   (define arrs (filter arrow? vec-ents))
                   (and (not (null? arrs)) arrs))
                 (define arrows
-                  (and arrow-record
-                       (or (find-arrows (send text get-start-position))
-                           (and (= (send text get-start-position) 
-                                   (send text get-end-position))
-                                (find-arrows (- (send text get-start-position) 1))))))
+                  (or (find-arrows (send text get-start-position))
+                      (and (= (send text get-start-position) 
+                              (send text get-end-position))
+                           (find-arrows (- (send text get-start-position) 1)))))
                 (when arrows
                   (tack/untack-callback arrows))))
 
@@ -794,90 +569,90 @@ If the namespace does not, they are colored the unbound color.
                   [else current-pos])))
 
             (define/public (remove-unused-requires txt pos)
-              (define unused-reqs
-                (sort (hash-keys unused-require-table) > #:key cadr))
+              (define unused-reqs 
+                (sort (send annotations get-unused-requires) > #:key cadr))
               (begin-edit-sequence)
               (for ([req (in-list unused-reqs)])
                 (match-define (list edit start end) req)
                 (define prev-token-end (find-preceding-ws-pos edit start))
                 (send edit delete prev-token-end end)
                 (send edit tabify prev-token-end))
-              (hash-clear! unused-require-table)
+              (send annotations clear-unused-requires)
               (end-edit-sequence))
 
             (define/public (add-prefix-for-require txt pos)
-              (define binding-identifiers (position-range->binding-arrows txt pos pos #t))
-              (define candidate-binders/possibly-prefixed
-                (for/list ([binding-identifier (in-list binding-identifiers)]
-                           #:when (equal? (var-arrow-require-arrow? binding-identifier)
-                                          #t))
-                  binding-identifier))
-              (define candidate-binders
-                (sort
-                 (for/list ([binding-identifier (in-list candidate-binders/possibly-prefixed)]
-                            #:unless
-                            (hash-ref prefix-table
-                                      (list (var-arrow-start-text binding-identifier)
-                                            (var-arrow-start-pos-left binding-identifier)
-                                            (var-arrow-start-pos-right binding-identifier))
-                                      #f))
-                   binding-identifier)
-                 <
-                 #:key var-arrow-start-pos-left))
-              (define parent
-                (let loop ([obj txt])
-                  (cond
-                    [(or (is-a? obj frame%) (is-a? obj dialog%))
-                     obj]
-                    [(is-a? obj area<%>) (loop (send obj get-parent))]
-                    [(is-a? obj editor<%>)
-                     (define a (send obj get-admin))
-                     (cond
-                       [(is-a? a editor-snip-editor-admin<%>)
-                        (define a2 (send (send a get-snip) get-admin))
-                        (and a2 (loop (send a2 get-editor)))]
-                       [else
-                        (define c (send obj get-canvas))
-                        (and c (loop c))])]
-                    [else #f])))
-              (cond
-                [(and (null? candidate-binders)
-                      (pair? candidate-binders/possibly-prefixed))
-                 (message-box (string-constant drracket)
-                              (if (= 1 (length candidate-binders/possibly-prefixed))
-                                  (string-constant cs-the-binder-is-prefixed)
-                                  (string-constant cs-all-binders-are-prefixed))
-                              parent)]
-                [(pair? candidate-binders)
-                 (define prefix 
-                   (get-text-from-user
-                    cs-prefix-require-title
-                    cs-prefix-require
-                    parent
-                    ""
-                    #:dialog-mixin frame:focus-table-mixin))
-                 (when prefix
-                   (define binder (car candidate-binders))
-                   (define make-identifiers-hash
-                     (binding-arrows->identifiers-hash #t (list binder)))
-                   (define req-txt (var-arrow-start-text binder))
-                   (define req-start (var-arrow-start-pos-left binder))
-                   (define req-end (var-arrow-start-pos-right binder))
+              (when annotations
+                (define binding-identifiers (position-range->binding-arrows txt pos pos #t))
+                (define candidate-binders/possibly-prefixed
+                  (for/list ([binding-identifier (in-list binding-identifiers)]
+                             #:when (equal? (var-arrow-require-arrow? binding-identifier)
+                                            #t))
+                    binding-identifier))
+                (define candidate-binders
+                  (sort
+                   (for/list ([binding-identifier (in-list candidate-binders/possibly-prefixed)]
+                              #:unless
+                              (send annotations is-prefix-require?
+                                    (var-arrow-start-text binding-identifier)
+                                    (var-arrow-start-pos-left binding-identifier)
+                                    (var-arrow-start-pos-right binding-identifier)))
+                     binding-identifier)
+                   <
+                   #:key var-arrow-start-pos-left))
+                (define parent
+                  (let loop ([obj txt])
+                    (cond
+                      [(or (is-a? obj frame%) (is-a? obj dialog%))
+                       obj]
+                      [(is-a? obj area<%>) (loop (send obj get-parent))]
+                      [(is-a? obj editor<%>)
+                       (define a (send obj get-admin))
+                       (cond
+                         [(is-a? a editor-snip-editor-admin<%>)
+                          (define a2 (send (send a get-snip) get-admin))
+                          (and a2 (loop (send a2 get-editor)))]
+                         [else
+                          (define c (send obj get-canvas))
+                          (and c (loop c))])]
+                      [else #f])))
+                (cond
+                  [(and (null? candidate-binders)
+                        (pair? candidate-binders/possibly-prefixed))
+                   (message-box (string-constant drracket)
+                                (if (= 1 (length candidate-binders/possibly-prefixed))
+                                    (string-constant cs-the-binder-is-prefixed)
+                                    (string-constant cs-all-binders-are-prefixed))
+                                parent)]
+                  [(pair? candidate-binders)
+                   (define prefix 
+                     (get-text-from-user
+                      cs-prefix-require-title
+                      cs-prefix-require
+                      parent
+                      ""
+                      #:dialog-mixin frame:focus-table-mixin))
+                   (when prefix
+                     (define binder (car candidate-binders))
+                     (define make-identifiers-hash
+                       (binding-arrows->identifiers-hash #t (list binder)))
+                     (define req-txt (var-arrow-start-text binder))
+                     (define req-start (var-arrow-start-pos-left binder))
+                     (define req-end (var-arrow-start-pos-right binder))
                    
-                   (for-each-variable-in-order
-                    (let ([ans #f])
-                      (λ ()
-                        (unless ans
-                          (set! ans (make-identifiers-hash))
-                          (hash-set! ans (list req-txt req-start req-end) #t))
-                        ans))
-                    (λ (txt start end)
-                      (cond
-                        [(and (equal? txt req-txt) (= req-start start) (= req-end end))
-                         (send txt insert ")" req-end req-end)
-                         (send txt insert (format "(prefix-in ~a " prefix) req-start req-start)]
-                        [else
-                         (send txt insert prefix start start)]))))]))
+                     (for-each-variable-in-order
+                      (let ([ans #f])
+                        (λ ()
+                          (unless ans
+                            (set! ans (make-identifiers-hash))
+                            (hash-set! ans (list req-txt req-start req-end) #t))
+                          ans))
+                      (λ (txt start end)
+                        (cond
+                          [(and (equal? txt req-txt) (= req-start start) (= req-end end))
+                           (send txt insert ")" req-end req-end)
+                           (send txt insert (format "(prefix-in ~a " prefix) req-start req-start)]
+                          [else
+                           (send txt insert prefix start start)]))))])))
             
             ;; callback for the rename popup menu item
             (define/private (rename-menu-callback make-identifiers-hash
@@ -1032,174 +807,23 @@ If the namespace does not, they are colored the unbound color.
                   [(is-a? menu menu-item<%>) (loop (send menu get-parent))]
                   [else #f])))
             
-            (define/private (syncheck:add-menu text start-pos end-pos key make-menu)
-              (when arrow-records
-                (when (<= 0 start-pos end-pos (last-position))
-                  (add-to-range/key text start-pos end-pos make-menu key (and key #t)))))
-
-            (define/public (syncheck:add-text-type text start fin text-type)
-              (when arrow-records
-                (when (is-a? text text:basic<%>)
-                  (when (hash-has-key? cs-check-syntax-background-colors text-type)
-                    (define color
-                      (hash-ref cs-check-syntax-background-colors text-type))
-                    (add-to-range/key text start fin
-                                      (make-colored-region color text start fin)
-                                      #f #f)))))
-
-            ;; these three methods are no longer used; see docs for more
-            (define/public (syncheck:add-background-color text start fin raw-color)
-              (when arrow-records
-                (when (is-a? text text:basic<%>)
-                  ;; we adjust the colors over here based on the white-on-black
-                  ;; preference so we don't have to have the preference set up
-                  ;; in the other place when running check syntax in online mode.
-                  (define color 
-                    (if (preferences:get 'framework:white-on-black?)
-                        (cond
-                          [(equal? raw-color "palegreen") "darkgreen"]
-                          [else raw-color])
-                        raw-color))
-                  (add-to-range/key text start fin
-                                    (make-colored-region color text start fin)
-                                    #f #f))))
-            (define/public (syncheck:add-arrow start-text start-pos-left start-pos-right
-                                               end-text end-pos-left end-pos-right
-                                               actual? level)
-              (void))
-            (define/public (syncheck:add-arrow/name-dup start-text
-                                                        start-pos-left start-pos-right
-                                                        end-text
-                                                        end-pos-left end-pos-right
-                                                        actual? level require-arrow? name-dup?)
-              (void))
-            
-            ;; pre: start-editor, end-editor are embedded in `this' (or are `this')
-            (define/public (syncheck:add-arrow/name-dup/pxpy start-text
-                                                             start-pos-left start-pos-right
-                                                             start-px start-py
-                                                             end-text
-                                                             end-pos-left end-pos-right
-                                                             end-px end-py
-                                                             actual? level require-arrow? name-dup?)
-              (when (and arrow-records
-                         (preferences:get 'drracket:syncheck:show-arrows?))
-                (when (add-to-bindings-table
-                       start-text start-pos-left start-pos-right
-                       end-text end-pos-left end-pos-right)
-                  (let ([arrow (make-var-arrow start-text start-pos-left start-pos-right
-                                               start-px start-py
-                                               end-text end-pos-left end-pos-right
-                                               end-px end-py
-                                               actual? level require-arrow? name-dup?)])
-                    (add-to-range/key start-text start-pos-left start-pos-right arrow #f #f)
-                    (add-to-range/key end-text end-pos-left end-pos-right arrow #f #f)))))
-            
-            ;; syncheck:add-tail-arrow : text number text number -> void
-            (define/public (syncheck:add-tail-arrow from-text from-pos to-text to-pos)
-              (when (and arrow-records
-                         (preferences:get 'drracket:syncheck:show-arrows?))
-                (let ([tail-arrow (make-tail-arrow to-text to-pos from-text from-pos)])
-                  (add-to-range/key from-text from-pos (+ from-pos 1) tail-arrow #f #f)
-                  (add-to-range/key to-text to-pos (+ to-pos 1) tail-arrow #f #f))))
-            
-            (define/public (syncheck:add-jump-to-definition text start end id filename submods)
-              (when arrow-records
-                (add-to-range/key text start end (make-def-link id filename submods) #f #f)))
-            (define/public (syncheck:add-jump-to-definition/phase-level+space text start end id filename submods phase-level)
-              (syncheck:add-jump-to-definition text start end id filename submods))
-
-            (define/public (syncheck:add-prefixed-require-reference req-text
-                                                                    req-pos-left
-                                                                    req-pos-right
-                                                                    prefix
-                                                                    prefix-src
-                                                                    prefix-left
-                                                                    prefix-right)
-              (hash-set! prefix-table (list req-text req-pos-left req-pos-right) #t))
-
-            (define/public (syncheck:add-unused-require req-text
-                                                        req-pos-left
-                                                        req-pos-right)
-              (hash-set! unused-require-table (list req-text req-pos-left req-pos-right) #t))
-            
-            ;; syncheck:add-mouse-over-status : text pos-left pos-right string -> void
-            (define/public (syncheck:add-mouse-over-status text pos-left pos-right str)
-              (when arrow-records
-                (add-to-range/key text pos-left pos-right 
-                                  (make-tooltip-info text pos-left pos-right str)
-                                  #f #f)))
-            
-            ;; add-to-range/key : text number number any any boolean -> void
-            ;; adds `key' to the range `start' - `end' in the editor
-            ;; If use-key? is #t, it adds `to-add' with the key, and does not
-            ;; replace a value with that key already there.
-            ;; if use-key? is 'set, it adds `to-add` to a set bound to the key
-            ;; in the assoc
-            ;; If use-key? is #f, it adds `to-add' without a key.
-            ;; pre: arrow-records is not #f
-            (define/private (add-to-range/key text _start _end to-add key use-key?)
-              ;; adjust the tooltip ranges to sensible values
-              ;; (e.g., in bounds and not equal to each other)
-              (define lp (send text last-position))
-
-              (unless (= 0 lp)
-
-                ;; first get them in bounds
-                (define start (max 0 (min lp _start)))
-                (define end (max 0 (min lp _end)))
-
-                ;; now make sure they are in order
-                (when (end . < . start) (set! end start))
-
-                ;; now make sure they are different
-                ;; (this code relies on there being at least
-                ;; one character in the buffer, checked above)
-                (when (= start end)
-                  (cond
-                    [(= end lp) (set! start (- end 1))]
-                    [else (set! end (+ start 1))]))
-
-                (define arrow-record (get-arrow-record text))
-                ;; Dropped the check (< _ (vector-length arrow-vector))
-                ;; which had the following comment:
-                ;;    the last test in the above and is because some syntax objects
-                ;;    appear to be from the original source, but can have bogus information.
-                
-                ;; interval-maps use half-open intervals which works out well for positions
-                ;; in the editor, since the interval [0,3) covers the characters just after
-                ;; positions 0, 1, and 2, but not the character at position 3 (positions are
-                ;; between characters)
-                (cond [use-key?
-                       (interval-map-update*! arrow-record start end
-                                              (λ (old)
-                                                (if (for/or ([x (in-list old)])
-                                                      (and (pair? x) (car x) (equal? (car x) key)))
-                                                    old
-                                                    (cons (cons key to-add) old)))
-                                              null)]
-                      [else
-                       (interval-map-cons*!
-                        arrow-record start end to-add null)])))
-
             (inherit get-top-level-window)
             
             (define/augment (on-change)
               (inner (void) on-change)
-              (when arrow-records
-                (let ([any-tacked? #f])
-                  (when tacked-hash-table
-                    (let/ec k
-                      (hash-for-each
-                       tacked-hash-table
-                       (λ (key val)
-                         (set! any-tacked? #t)
-                         (k (void))))))
-                  (when any-tacked?
-                    (invalidate-bitmap-cache/padding)))))
+              (let ([any-tacked? #f])
+                (when tacked-hash-table
+                  (let/ec k
+                    (hash-for-each
+                     tacked-hash-table
+                     (λ (key val)
+                       (set! any-tacked? #t)
+                       (k (void))))))
+                (when any-tacked?
+                  (invalidate-bitmap-cache/padding))))
             
             (define/override (on-paint before dc left top right bottom dx dy draw-caret)
-              (when (and arrow-records (not before))
+              (when (and annotations (not before))
                 (define admin (get-admin))
                 ;; when painting on the canvas the mouse is over...
                 (when (or (not mouse-admin) (object=? mouse-admin admin))
@@ -1270,9 +894,8 @@ If the namespace does not, they are colored the unbound color.
                          (send dc set-pen (get-tail-pen))
                          (send dc set-brush (get-tacked-tail-brush))])
                       (draw-arrow2 arrow)))
-                  (when (and cursor-pos
-                             cursor-text)
-                    (define arrow-records-at-cursor (fetch-arrow-records cursor-text cursor-pos))
+                  (when (and cursor-pos cursor-text annotations)
+                    (define arrow-records-at-cursor (send annotations get-arrows cursor-text cursor-pos))
                     (define tail-arrows '())
                     (when arrow-records-at-cursor
                       (for ([ele (in-list arrow-records-at-cursor)])
@@ -1302,37 +925,36 @@ If the namespace does not, they are colored the unbound color.
             
             ;; for-each-tail-arrows : (tail-arrow -> void) tail-arrow -> void
             (define/private (for-each-tail-arrows f tail-arrows)
-              ;; call-f-ht ensures that `f' is only called once per arrow
-              (define call-f-ht (make-hash))
+              (when annotations
+                ;; call-f-ht ensures that `f' is only called once per arrow
+                (define call-f-ht (make-hash))
               
-              (for ([tail-arrow (in-list tail-arrows)])
-                (define (for-each-tail-arrows/to/from tail-arrow-pos tail-arrow-text
-                                                      tail-arrow-other-pos tail-arrow-other-text)
+                (for ([tail-arrow (in-list tail-arrows)])
+                  (define (for-each-tail-arrows/to/from tail-arrow-pos tail-arrow-text
+                                                        tail-arrow-other-pos tail-arrow-other-text)
                   
-                  ;; traversal-ht ensures that we don't loop in the arrow traversal.
-                  (let ([traversal-ht (make-hasheq)])
-                    (let loop ([tail-arrow tail-arrow])
-                      (unless (hash-ref traversal-ht tail-arrow #f)
-                        (hash-set! traversal-ht tail-arrow #t)
-                        (unless (hash-ref call-f-ht tail-arrow #f)
-                          (hash-set! call-f-ht tail-arrow #t)
-                          (f tail-arrow))
-                        (let* ([next-pos (tail-arrow-pos tail-arrow)]
-                               [next-text (tail-arrow-text tail-arrow)]
-                               [arrow-record (hash-ref arrow-records next-text #f)])
-                          (when arrow-record
-                            (for ([ele (in-list (interval-map-ref arrow-record next-pos null))])
-                              (cond
-                                [(tail-arrow? ele)
-                                 (let ([other-pos (tail-arrow-other-pos ele)]
-                                       [other-text (tail-arrow-other-text ele)])
-                                   (when (and (= other-pos next-pos)
-                                              (eq? other-text next-text))
-                                     (loop ele)))]))))))))
-                (for-each-tail-arrows/to/from tail-arrow-to-pos tail-arrow-to-text
-                                              tail-arrow-from-pos tail-arrow-from-text)
-                (for-each-tail-arrows/to/from tail-arrow-from-pos tail-arrow-from-text
-                                              tail-arrow-to-pos tail-arrow-to-text)))
+                    ;; traversal-ht ensures that we don't loop in the arrow traversal.
+                    (let ([traversal-ht (make-hasheq)])
+                      (let loop ([tail-arrow tail-arrow])
+                        (unless (hash-ref traversal-ht tail-arrow #f)
+                          (hash-set! traversal-ht tail-arrow #t)
+                          (unless (hash-ref call-f-ht tail-arrow #f)
+                            (hash-set! call-f-ht tail-arrow #t)
+                            (f tail-arrow))
+                          (define next-pos (tail-arrow-pos tail-arrow))
+                          (define next-text (tail-arrow-text tail-arrow))
+                          (for ([ele (in-list (send annotations get-arrows next-text next-pos))])
+                            (cond
+                              [(tail-arrow? ele)
+                               (let ([other-pos (tail-arrow-other-pos ele)]
+                                     [other-text (tail-arrow-other-text ele)])
+                                 (when (and (= other-pos next-pos)
+                                            (eq? other-text next-text))
+                                   (loop ele)))]))))))
+                  (for-each-tail-arrows/to/from tail-arrow-to-pos tail-arrow-to-text
+                                                tail-arrow-from-pos tail-arrow-from-text)
+                  (for-each-tail-arrows/to/from tail-arrow-from-pos tail-arrow-from-text
+                                                tail-arrow-to-pos tail-arrow-to-text))))
             
             ;; after a short delay, current-* are set to latent-*, and arrows are drawn
             (define latent-pos #f)
@@ -1381,12 +1003,11 @@ If the namespace does not, they are colored the unbound color.
               (define-values (pos text eles tooltip)
                 (cond
                   ;; need to check this first so syncheck:clear-arrows will work
-                  [(not arrow-records)
+                  [(not annotations)
                    (values #f #f #f #f)]
                   [(and x y)
                    (define-values (pos text) (get-pos/text-dc-location x y))
-                   (define arrow-record (and text pos (hash-ref arrow-records text #f)))
-                   (define eles (and arrow-record (interval-map-ref arrow-record pos null)))
+                   (define eles (and text pos (send annotations get-arrows text pos)))
                    (define tooltip (cond [(not tooltips-enabled?) #f]
                                          [(and (equal? latent-eles eles) latent-tooltip)
                                           latent-tooltip]
@@ -1406,8 +1027,8 @@ If the namespace does not, they are colored the unbound color.
               (or text-changed? eles-changed? tooltip-changed?))
             
             (define/private (update-drawn-arrows)
-              (define latent-stuff (fetch-arrow-records latent-text latent-pos))
-              (define cursor-stuff (fetch-arrow-records cursor-text cursor-pos))
+              (define latent-stuff (and annotations (send annotations get-arrows latent-text latent-pos)))
+              (define cursor-stuff (and annotations (send annotations get-arrows cursor-text cursor-pos)))
 
               (set! cursor-pos latent-pos)
               (set! cursor-text latent-text)
@@ -1461,16 +1082,15 @@ If the namespace does not, they are colored the unbound color.
               (update-drawn-arrows))
             
             (define/public (syncheck:build-popup-menu menu pos text [sep-before? #t])
-              (when arrow-records
-                (define arrow-record (hash-ref arrow-records text #f))
-                (when arrow-record
+              (when annotations
+                (define vec-ents (send annotations get-arrows text pos))
+                (unless (null? vec-ents)
                   (define need-a-sep? (not sep-before?))
                   (define (add-sep) 
                     (unless need-a-sep? 
                       (set! need-a-sep? #t)
                       (when sep-before?
                         (new separator-menu-item% [parent menu]))))
-                  (define vec-ents (interval-map-ref arrow-record pos null))
                   (define start-selection (send text get-start-position))
                   (define end-selection (send text get-end-position))
                   (define arrows (filter arrow? vec-ents))
@@ -1520,7 +1140,7 @@ If the namespace does not, they are colored the unbound color.
                       arrows-menu
                       (lambda (item evt)
                         (untack-crossing-arrows
-                         arrow-record
+                         text
                          start-selection
                          end-selection))))
                   
@@ -1661,7 +1281,7 @@ If the namespace does not, they are colored the unbound color.
                 (when (or include-require-arrows?
                           (not (var-arrow-require-arrow? arr)))
                   (set! binding-arrows (cons arr binding-arrows))))
-              (define arrs (fetch-arrow-records the-text the-pos))
+              (define arrs (and annotations (send annotations get-arrows the-text the-pos)))
               (when arrs
                 (for ([arrow (in-list arrs)])
                   (when (var-arrow? arrow)
@@ -1674,8 +1294,9 @@ If the namespace does not, they are colored the unbound color.
                       [else
                        ;; a bound occurrence => find binders
                        (for ([candidate-binder
-                              (in-list (fetch-arrow-records (var-arrow-start-text arrow)
-                                                            (var-arrow-start-pos-left arrow)))])
+                              (in-list (send annotations get-arrows
+                                             (var-arrow-start-text arrow)
+                                             (var-arrow-start-pos-left arrow)))])
                          (when (var-arrow? candidate-binder)
                            (when (and (equal? (var-arrow-start-text arrow)
                                               (var-arrow-start-text candidate-binder))
@@ -1691,34 +1312,35 @@ If the namespace does not, they are colored the unbound color.
               (define (add-one txt start end)
                 (hash-set! identifiers-hash (list txt start end) #t))
               (define (get-identifiers-hash)
-                (unless identifiers-hash
-                  (set! identifiers-hash (make-hash))
-                  (define already-considered (make-hash))
-                  (for ([binding-arrow (in-list binding-arrows)])
-                    (add-one (var-arrow-start-text binding-arrow)
-                             (var-arrow-start-pos-left binding-arrow)
-                             (var-arrow-start-pos-right binding-arrow))
-                    (define range-to-consider
-                      (cons (var-arrow-start-pos-left binding-arrow)
-                            (var-arrow-start-pos-right binding-arrow)))
-                    (unless (hash-ref already-considered range-to-consider #f)
-                      (hash-set! already-considered range-to-consider #t)
-                      (for ([pos (in-range (car range-to-consider) (cdr range-to-consider))])
-                        (for ([arrow (in-list (fetch-arrow-records 
-                                               (var-arrow-start-text binding-arrow)
-                                               pos))])
-                          (when (var-arrow? arrow)
-                            (when (or include-require-arrows?
-                                      (not (var-arrow-require-arrow? arrow)))
-                              (when (and (equal? (var-arrow-start-text arrow)
-                                                 (var-arrow-start-text binding-arrow))
-                                         (equal? (var-arrow-start-pos-left arrow)
-                                                 (var-arrow-start-pos-left binding-arrow))
-                                         (equal? (var-arrow-start-pos-right arrow)
-                                                 (var-arrow-start-pos-right binding-arrow)))
-                                (add-one (var-arrow-end-text arrow)
-                                         (var-arrow-end-pos-left arrow)
-                                         (var-arrow-end-pos-right arrow))))))))))
+                (when annotations
+                  (unless identifiers-hash
+                    (set! identifiers-hash (make-hash))
+                    (define already-considered (make-hash))
+                    (for ([binding-arrow (in-list binding-arrows)])
+                      (add-one (var-arrow-start-text binding-arrow)
+                               (var-arrow-start-pos-left binding-arrow)
+                               (var-arrow-start-pos-right binding-arrow))
+                      (define range-to-consider
+                        (cons (var-arrow-start-pos-left binding-arrow)
+                              (var-arrow-start-pos-right binding-arrow)))
+                      (unless (hash-ref already-considered range-to-consider #f)
+                        (hash-set! already-considered range-to-consider #t)
+                        (for ([pos (in-range (car range-to-consider) (cdr range-to-consider))])
+                          (for ([arrow (in-list (send annotations get-arrows 
+                                                      (var-arrow-start-text binding-arrow)
+                                                      pos))])
+                            (when (var-arrow? arrow)
+                              (when (or include-require-arrows?
+                                        (not (var-arrow-require-arrow? arrow)))
+                                (when (and (equal? (var-arrow-start-text arrow)
+                                                   (var-arrow-start-text binding-arrow))
+                                           (equal? (var-arrow-start-pos-left arrow)
+                                                   (var-arrow-start-pos-left binding-arrow))
+                                           (equal? (var-arrow-start-pos-right arrow)
+                                                   (var-arrow-start-pos-right binding-arrow)))
+                                  (add-one (var-arrow-end-text arrow)
+                                           (var-arrow-end-pos-left arrow)
+                                           (var-arrow-end-pos-right arrow)))))))))))
                 identifiers-hash)
               get-identifiers-hash)
             
@@ -1842,7 +1464,6 @@ If the namespace does not, they are colored the unbound color.
               (invalidate-bitmap-cache/padding))
             
             (define/public (tack-crossing-arrows-callback text)
-              (define arrow-record (hash-ref arrow-records text #f))
               (define start (send text get-start-position))
               (define end (send text get-end-position))
               (define (within t p)
@@ -1850,7 +1471,7 @@ If the namespace does not, they are colored the unbound color.
                      (<= start p end)))
               ;; FIXME: Add to interval-map: iteration over distinct ranges w/i given range
               (for ([position (in-range start end)])
-                (for ([va (in-list (interval-map-ref arrow-record position null))]
+                (for ([va (in-list (send annotations get-arrows text position))]
                       #:when (var-arrow? va))
                   (define va-start (var-arrow-start-pos-left va))
                   (define va-start-text (var-arrow-start-text va))
@@ -1861,10 +1482,10 @@ If the namespace does not, they are colored the unbound color.
                     (hash-set! tacked-hash-table va #t))))
               (invalidate-bitmap-cache/padding))
 
-            (define/private (untack-crossing-arrows arrow-record start end)
+            (define/private (untack-crossing-arrows text start end)
               ;; FIXME: same comment as in 'tack-crossing...'
               (for ([position (in-range start end)])
-                (for ([va (interval-map-ref arrow-record position null)]
+                (for ([va (in-list (send annotations get-arrows text position))]
                       #:when (var-arrow? va))
                   (hash-set! tacked-hash-table va #f))))
 
@@ -1884,17 +1505,15 @@ If the namespace does not, they are colored the unbound color.
                  (jump-to-binding-callback vec-ents))))
             
             (define/private (jump-to-binding/bound-helper text do-jump)
-              (when arrow-records
-                (define arrow-record (hash-ref arrow-records text #f))
-                (when arrow-record
-                  (define arrows '())
-                  (define start-pos (send text get-start-position))
-                  (define end-pos (send text get-end-position))
-                  (for ([pos (in-range start-pos (+ end-pos 1))])
-                    (set! arrows (append (filter var-arrow? (interval-map-ref arrow-record pos null))
-                                         arrows)))
-                  (unless (null? arrows)
-                    (do-jump start-pos end-pos text arrows)))))
+              (when annotations
+                (define arrows '())
+                (define start-pos (send text get-start-position))
+                (define end-pos (send text get-end-position))
+                (for ([pos (in-range start-pos (+ end-pos 1))])
+                  (set! arrows (append (filter var-arrow? (send annotations get-arrows text pos))
+                                       arrows)))
+                (unless (null? arrows)
+                  (do-jump start-pos end-pos text arrows))))
             
             ;; jump-to-next-callback : num text boolean? -> void
             ;; callback for the jump popup menu item
@@ -1959,12 +1578,10 @@ If the namespace does not, they are colored the unbound color.
             ;; syncheck:jump-to-definition : text -> void
             (define/public (syncheck:jump-to-definition text)
               (let ([pos (send text get-start-position)])
-                (when arrow-records
-                  (let ([arrow-record (hash-ref arrow-records text #f)])
-                    (when arrow-record
-                      (let ([vec-ents (filter def-link? (interval-map-ref arrow-record pos null))])
-                        (unless (null? vec-ents)
-                          (jump-to-definition-callback (car vec-ents)))))))))
+                (define arrow-records (send annotations get-arrows text pos))
+                (define vec-ents (filter def-link? arrow-records))
+                (unless (null? vec-ents)
+                  (jump-to-definition-callback (car vec-ents)))))
             
             (define/private (jump-to-definition-callback def-link)
               (define go/f (def-link->tab/pos def-link))
@@ -2000,30 +1617,6 @@ If the namespace does not, they are colored the unbound color.
                 (unless module-language?
                   (send frame reset-previous-check-syntax-information this)))
               (inner (void) after-set-next-settings settings))
-
-            (define/public (syncheck:find-source-object stx)
-              (cond
-                [(not (syntax-source stx)) #f]
-                [(and (symbol? (syntax-source stx))
-                      (text:lookup-port-name (syntax-source stx)))
-                 => values]
-                [else
-                 (let txt-loop ([text this])
-                   (cond
-                     [(and (is-a? text text:basic<%>)
-                           (send text port-name-matches? (syntax-source stx)))
-                      text]
-                     [else
-                      (let snip-loop ([snip (send text find-first-snip)])
-                        (cond
-                          [(not snip)
-                           #f]
-                          [(and (is-a? snip editor-snip%)
-                                (send snip get-editor))
-                           (or (txt-loop (send snip get-editor))
-                               (snip-loop (send snip next)))]
-                          [else 
-                           (snip-loop (send snip next))]))]))]))
             
             (define/private (invalidate-bitmap-cache/padding)
               (define-values (l t r b) (get-padding))
@@ -2050,10 +1643,6 @@ If the namespace does not, they are colored the unbound color.
       
       (mixin (drracket:unit:tab<%>) ()
         (inherit is-current-tab? get-defs get-frame)
-        
-        (define next-trace-refresh? #t)
-        (define/public (get-next-trace-refresh?) next-trace-refresh?)
-        (define/public (set-next-trace-refresh b) (set! next-trace-refresh? b))
         
         (define current-replay-state #f)
         (define/public (set-replay-state rs) (set! current-replay-state #f))
@@ -2202,39 +1791,7 @@ If the namespace does not, they are colored the unbound color.
         
         (define current-syncheck-running-mode #f)
     
-        (define/public (replay-compile-comp-trace defs-text val bx)
-          (send (send defs-text get-tab) add-bkg-running-color
-                'syncheck "orchid" cs-syncheck-running)
-          (define known-dead-place-channels (make-hasheq))
-          (let loop ([val val]
-                     [start-time (current-inexact-milliseconds)]
-                     [i 0])
-            (cond
-              [(and (null? val) (pair? (unbox bx)))
-               (define new-val (car (unbox bx)))
-               (set-box! bx (cdr (unbox bx)))
-               (loop new-val start-time i)]
-              [(null? val)
-               (send defs-text syncheck:update-blue-boxes (send (send defs-text get-tab) get-ints))
-               (send defs-text syncheck:update-drawn-arrows)
-               (send (send defs-text get-tab) remove-bkg-running-color 'syncheck)
-               (set-syncheck-running-mode #f)]
-              [(not (unbox bx))
-               ;; if we've been asked to stop (because some new results are ready
-               ;; and another trace is running).
-               (void)]
-              [(and (i . > . 0)  ;; check i just in case things are really strange
-                    (20 . <= . (- (current-inexact-milliseconds) start-time)))
-               (queue-callback
-                (λ ()
-                  (when (unbox bx)
-                    (log-timeline "continuing replay-compile-comp-trace"
-                                  (loop val (current-inexact-milliseconds) 0))))
-                #f)]
-              [else
-               (process-trace-element known-dead-place-channels defs-text (car val))
-               (loop (cdr val) start-time (+ i 1))])))
-        
+
         (define/public (reset-previous-check-syntax-information defs-text)
           (define tab (send defs-text get-tab))
           (send tab syncheck:clear-error-message)
@@ -2243,67 +1800,6 @@ If the namespace does not, they are colored the unbound color.
           (send defs-text disable-blue-boxes)
           (send (send tab get-ints) disable-blue-boxes)
           (send defs-text syncheck:init-arrows))
-        
-        (define/private (process-trace-element known-dead-place-channels defs-text x)
-          ;; using 'defs-text' all the time is wrong in the case of embedded editors,
-          ;; but they already don't work and we've arranged for them to not appear here ....
-          (match x
-            [`#(syncheck:add-arrow/name-dup/pxpy
-                ,start-pos-left ,start-pos-right ,start-px ,start-py
-                ,end-pos-left ,end-pos-right ,end-px ,end-py
-                ,actual? ,level ,require-arrow? ,name-dup-pc ,name-dup-id)
-             (define name-dup? (build-name-dup? name-dup-pc name-dup-id  known-dead-place-channels))
-             (send defs-text syncheck:add-arrow/name-dup/pxpy
-                   defs-text start-pos-left start-pos-right start-px start-py
-                   defs-text end-pos-left end-pos-right end-px end-py
-                   actual? level require-arrow? name-dup?)]
-            [`#(syncheck:add-tail-arrow ,from-pos ,to-pos)
-             (send defs-text syncheck:add-tail-arrow defs-text from-pos defs-text to-pos)]
-            [`#(syncheck:add-mouse-over-status ,pos-left ,pos-right ,str)
-             (send defs-text syncheck:add-mouse-over-status defs-text pos-left pos-right str)]
-            [`#(syncheck:add-text-type ,start ,fin ,text-type)
-             (send defs-text syncheck:add-text-type defs-text start fin text-type)]
-            [`#(syncheck:add-background-color ,start ,fin ,color) ; unused
-             (send defs-text syncheck:add-background-color defs-text start fin color)]
-            [`#(syncheck:add-jump-to-definition/phase-level+space ,start ,end ,id ,filename ,submods ,phase-level)
-             (send defs-text syncheck:add-jump-to-definition/phase-level+space defs-text start end id filename submods phase-level)]
-
-            [`#(syncheck:add-require-open-menu ,start-pos ,end-pos ,file)
-             (send defs-text syncheck:add-require-open-menu defs-text start-pos end-pos file)]
-            [`#(syncheck:add-docs-menu ,start-pos ,end-pos ,key ,the-label ,path ,definition-tag ,tag)
-             (send defs-text syncheck:add-docs-menu defs-text start-pos end-pos
-                   key the-label path definition-tag tag)]
-            [`#(syncheck:add-definition-target/phase-level+space ,start-pos ,end-pos ,id ,mods ,phase-level)
-             (send defs-text syncheck:add-definition-target/phase-level+space defs-text start-pos end-pos id mods phase-level)]
-            [`#(syncheck:add-id-set ,to-be-renamed/poss ,name-dup-pc ,name-dup-id)
-             (define to-be-renamed/poss/fixed
-               (for/list ([lst (in-list to-be-renamed/poss)])
-                 (list defs-text (list-ref lst 0) (list-ref lst 1))))
-             (define name-dup? (build-name-dup? name-dup-pc name-dup-id known-dead-place-channels))
-             (send defs-text syncheck:add-id-set to-be-renamed/poss/fixed name-dup?)]
-            [`#(syncheck:add-prefixed-require-reference ,id-pos-left ,id-pos-right
-                                                        ,prefix ,prefix-left ,prefix-right)
-             (send defs-text syncheck:add-prefixed-require-reference
-                   defs-text id-pos-left id-pos-right
-                   prefix defs-text prefix-left prefix-right)]
-            [`#(syncheck:add-unused-require ,req-pos-left ,req-pos-right)
-             (send defs-text syncheck:add-unused-require defs-text req-pos-left req-pos-right)]))
-        
-        (define/private (build-name-dup? name-dup-pc name-dup-id known-dead-place-channels)
-          (define (name-dup? name) 
-            (cond
-              [(hash-ref known-dead-place-channels name-dup-pc #f)
-               ;; just give up here ...
-               #f]
-              [else
-               (place-channel-put name-dup-pc (list name-dup-id name))
-               (define res (sync/timeout .5 (handle-evt name-dup-pc list)))
-               (cond
-                 [(list? res) (car res)]
-                 [else
-                  (hash-set! known-dead-place-channels name-dup-pc #t)
-                  #f])]))
-          name-dup?)
         
         (define/augment (enable-evaluation)
           (send check-syntax-button enable #t)
@@ -2723,58 +2219,14 @@ If the namespace does not, they are colored the unbound color.
     (drracket:get/extend:extend-unit-frame unit-frame-mixin #f)
     (drracket:get/extend:extend-tab tab-mixin)
     
-    
     (drracket:module-language-tools:add-online-expansion-monitor
      online-comp.rkt
      'monitor
      (λ (defs-text val)
-       (define tab (send defs-text get-tab))
        (cond
-         [(drracket:module-language-tools:start? val) (send tab set-next-trace-refresh #t)]
-         [(drracket:module-language-tools:done? val) (void)]
-         [else 
-          
-          ;; replay-state = 
-          ;;  (or/c #f                  -- no replay running
-          ;;        (box #t             -- keep running this replay
-          ;;             (listof (listof stuff))
-          ;;                            -- pick up some new elements to add to the current replay
-          ;;             #f))           -- doesn't actually get set on a tab, but this means to
-          ;;                               just stop running the replay
-          
-          
-          (when (send tab get-next-trace-refresh?)
-            (define old-replay-state (send tab get-replay-state))
-            (when (box? old-replay-state)
-              (set-box! old-replay-state #f))
-            (send tab set-replay-state #f)
-            (send tab set-next-trace-refresh #f)
-            
-            ;; reset any previous check syntax information
-            (send tab syncheck:clear-error-message)
-            (send tab syncheck:clear-highlighting)
-            (send defs-text syncheck:reset-docs-im)
-            (send tab add-bkg-running-color 'syncheck "orchid" cs-syncheck-running)
-            (send defs-text syncheck:init-arrows))
-
-          (define drr-frame (send (send defs-text get-tab) get-frame))
-          (cond
-            [(string? val) ;; an internal error happened
-             (send tab remove-bkg-running-color 'syncheck)
-             (send tab show-online-internal-error val)]
-            [else
-             (define current-replay-state (send tab get-replay-state))
-             (cond
-               [(not current-replay-state)
-                (define new-replay-state (box '()))
-                (send tab set-replay-state new-replay-state)
-                (send drr-frame replay-compile-comp-trace
-                      defs-text
-                      val
-                      (box '()))] ;; should this box be new-replay-state instead?
-               [else
-                (set-box! current-replay-state
-                          (append (unbox current-replay-state) (list val)))])])])))
+         [(drracket:module-language-tools:start? val) (ann-monitor-start defs-text)]
+         [(drracket:module-language-tools:done? val) (ann-monitor-done defs-text)]
+         [else (ann-monitor defs-text val)])))
     
     (drracket:module-language-tools:add-online-expansion-handler
      online-comp.rkt
