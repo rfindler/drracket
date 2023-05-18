@@ -191,7 +191,7 @@
              invalidate-bitmap-cache get-text
              is-stopped? is-frozen? is-lexer-valid?
              classify-position get-token-range
-             get/start-docs-im get-docs-im get-require-candidates get-path->pkg-cache)
+             get-path->pkg-cache get-annotations)
     
     (define locked? (preferences:get 'drracket:syncheck:contracts-locked?))
     (define mouse-in-blue-box? #f)
@@ -497,8 +497,9 @@
 
     (define/private (compute-tag+rng maybe-pause pos)
       (define basic-info
-        (or (interval-map-ref (get/start-docs-im) pos #f)
-            (check-nearby-symbol pos maybe-pause)))
+        (and (get-annotations)
+             (or (send (get-annotations) get-docs-im-info pos)
+                 (check-nearby-symbol pos maybe-pause))))
       (match basic-info
         [(list start end tag path url-tag)
          (define id (string->symbol (get-text start end)))
@@ -538,7 +539,11 @@
         [#f #f]))
     
     (define/private (check-nearby-symbol pos maybe-pause)
-      (define require-candidates (get-require-candidates))
+      (define ann (get-annotations))
+      (define require-candidates
+        (if ann
+            (send ann get-require-candidates)
+            (set)))
       (cond
         [(or (is-stopped?)
              (is-frozen?)
@@ -549,9 +554,10 @@
          (define mps
            (for/list ([require-candidate (in-set require-candidates)])
              (path->module-path require-candidate #:cache (get-path->pkg-cache))))
+         
          (let loop ([pos pos])
            (cond
-             [(interval-map-ref (get/start-docs-im) pos #f) => values]
+             [(send ann get-docs-im-info pos) => values]
              [(member (classify-position pos) '(symbol keyword))
               (define-values (start end) (get-token-range pos))
               (cond
@@ -584,29 +590,16 @@
           [else #f])))
     
     (define/augment (on-insert where len)
-      (define docs-im (get-docs-im))
-      (when docs-im
-        (clear-im-range where len)
-        (interval-map-expand! docs-im where (+ where len)))
+      (define ann (get-annotations))
+      (when ann
+        (send ann insertion where len))
       (inner (void) on-insert where len))
     
     (define/augment (on-delete where len)
-      (define docs-im (get-docs-im))
-      (when docs-im
-        (clear-im-range where len)
-        (interval-map-contract! docs-im where (+ where len)))
+      (define ann (get-annotations))
+      (when ann
+        (send ann deletion where len))
       (inner (void) on-delete where len))
-
-    (define/private (clear-im-range where len)
-      (define docs-im (get-docs-im))
-      (when docs-im
-        (for ([x (in-range len)])
-          (define tag+rng (interval-map-ref docs-im (+ where x) #f))
-          (when tag+rng
-            (interval-map-remove! 
-             docs-im 
-             (list-ref tag+rng 0)
-             (list-ref tag+rng 1))))))
     
     (define/private (in-blue-box? evt)
       (cond
@@ -654,27 +647,13 @@
 
 (define docs-text-original-info-mixin
   (mixin () (docs-text-info<%>)
-    (define docs-im #f)
     (define require-candidates '())
     (define path->pkg-cache (make-hash))
     (define linked-texts '())
     (define/public (get-path->pkg-cache) path->pkg-cache)
     (define/public (syncheck:reset-docs-im)
-      (set! docs-im #f)
       (set! require-candidates '())
       (set! path->pkg-cache (make-hash)))
-    (define/public (get-docs-im) docs-im)
-    (define/public (get/start-docs-im) 
-      (cond
-        [docs-im docs-im]
-        [else
-         (set! docs-im (make-interval-map))
-         docs-im]))
-    (define/public (syncheck:add-docs-range start end tag path url-tag)
-      ;; the +1 to end is effectively assuming that there
-      ;; are no abutting identifiers with documentation
-      (define rng (list start (+ end 1) tag path url-tag))
-      (interval-map-set! (get/start-docs-im) start (+ end 1) rng))
     (define/public (syncheck:add-require-candidate path)
       (set! require-candidates (set-add require-candidates path)))
     (define/public (get-require-candidates) require-candidates)

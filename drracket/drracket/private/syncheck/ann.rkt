@@ -19,6 +19,11 @@
          string-constants/string-constant
          )
 
+;; todo:
+;;  - audit names in `define-local-member-name` in blueboxes-gui.rkt
+;;  - clear-docs-range and on-insert and on-delete in blueboxes gui need
+;;    to make their way into the annotations object
+
 (provide (struct-out arrow)
          (struct-out var-arrow)
          (struct-out tail-arrow)
@@ -109,9 +114,6 @@
     (define/public (clear-unused-requires)
       (hash-clear! unused-require-table))
               
-    (define require-candidates (set))
-    (define/public (get-require-candiates) require-candidates)
-    
     (define/public (dump-arrow-records)
       (cond
         [arrow-records
@@ -187,6 +189,20 @@
         [else
          bindings-table]))
 
+    (define require-candidates (set))
+    (define/public (get-require-candidates) require-candidates)
+
+    (define docs-im #f)
+    (define/private (get-docs-im) docs-im)
+    (define/private (get/start-docs-im) 
+      (cond
+        [docs-im docs-im]
+        [else
+         (set! docs-im (make-interval-map))
+         docs-im]))
+    
+    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+    
     (define/private (syncheck:add-menu text start-pos end-pos key make-menu)
       (when arrow-records
         (when (<= 0 start-pos end-pos) ;; this used to guard against the last position in the editor, no longer
@@ -302,7 +318,7 @@
                                            path
                                            definition-tag
                                            url-tag)
-      (error 'add-docs-menu "need to figure out what to do about docs-range") ;(syncheck:add-docs-range start-pos end-pos definition-tag path url-tag)
+      (syncheck:add-docs-range start-pos end-pos definition-tag path url-tag)
       (define (visit-docs-url)
         (define url (path->url path))
         (define url2 (if url-tag
@@ -325,6 +341,13 @@
               [callback
                (λ (x y)
                  (visit-docs-url))]))))
+
+    
+    (define/public (syncheck:add-docs-range start end tag path url-tag)
+      ;; the +1 to end is effectively assuming that there
+      ;; are no abutting identifiers with documentation
+      (define rng (list start (+ end 1) tag path url-tag))
+      (interval-map-set! (get/start-docs-im) start (+ end 1) rng))
             
     (define/public (syncheck:add-definition-target/phase-level+space source start-pos end-pos id mods phase-level)
       (syncheck:add-definition-target source start-pos end-pos id mods))

@@ -389,6 +389,7 @@ If the namespace does not, they are colored the unbound color.
                      get-padding)
 
             (define annotations #f)
+            (define/public (get-annotations) annotations)
 
             ;; cleanup-texts : (or/c #f (listof text))
             (define cleanup-texts #f)
