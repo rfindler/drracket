@@ -1,4 +1,4 @@
-#lang racket/base
+ #lang racket/base
 (require framework
          framework/private/coroutine
          racket/gui/base
@@ -172,6 +172,11 @@
       (super on-paint))
     (super-new)))
 
+(define annotations<%>
+  (interface ()
+    get-docs-im-info
+    get-require-candidates))
+
 (define docs-text-info<%>
   (interface ()
     get-docs-im
@@ -191,7 +196,10 @@
              invalidate-bitmap-cache get-text
              is-stopped? is-frozen? is-lexer-valid?
              classify-position get-token-range
-             get-path->pkg-cache get-annotations)
+             get-path->pkg-cache
+
+             get-require-candidates
+             get-docs-im-info)
     
     (define locked? (preferences:get 'drracket:syncheck:contracts-locked?))
     (define mouse-in-blue-box? #f)
@@ -497,9 +505,8 @@
 
     (define/private (compute-tag+rng maybe-pause pos)
       (define basic-info
-        (and (get-annotations)
-             (or (send (get-annotations) get-docs-im-info pos)
-                 (check-nearby-symbol pos maybe-pause))))
+        (or (get-docs-im-info pos)
+            (check-nearby-symbol pos maybe-pause)))
       (match basic-info
         [(list start end tag path url-tag)
          (define id (string->symbol (get-text start end)))
@@ -539,11 +546,7 @@
         [#f #f]))
     
     (define/private (check-nearby-symbol pos maybe-pause)
-      (define ann (get-annotations))
-      (define require-candidates
-        (if ann
-            (send ann get-require-candidates)
-            (set)))
+      (define require-candidates (get-require-candidates))
       (cond
         [(or (is-stopped?)
              (is-frozen?)
@@ -557,7 +560,7 @@
          
          (let loop ([pos pos])
            (cond
-             [(send ann get-docs-im-info pos) => values]
+             [(get-docs-im-info pos) => values]
              [(member (classify-position pos) '(symbol keyword))
               (define-values (start end) (get-token-range pos))
               (cond
@@ -646,7 +649,7 @@
     (super-new)))
 
 (define docs-text-original-info-mixin
-  (mixin () (docs-text-info<%>)
+  (mixin (annotations<%>) (docs-text-info<%>)
     (define require-candidates '())
     (define path->pkg-cache (make-hash))
     (define linked-texts '())
@@ -676,7 +679,7 @@
 ;; isn't correct, only the require candidates are right; so we just
 ;; return empty things here.
 (define docs-text-linked-info-mixin
-  (mixin () (docs-text-info<%>)
+  (mixin (annotations<%>) (docs-text-info<%>)
     (define original-info-text #f)
     (define/public (set-original-info-text info-text)
       ;; the twisty way this is set up means that
