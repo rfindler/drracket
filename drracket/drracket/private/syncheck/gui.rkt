@@ -52,7 +52,7 @@ If the namespace does not, they are colored the unbound color.
          drracket/private/syncheck/traversals
          drracket/private/syncheck/annotate
          framework/private/logging-timer)
-(provide tool@)
+(provide gui@)
 
 (define orig-output-port (current-output-port))
 (define (oprintf . args) (apply fprintf orig-output-port args))
@@ -206,9 +206,8 @@ If the namespace does not, they are colored the unbound color.
                                       framework:basic-canvas-background
                                       framework:basic-canvas-background))
 
-(define tool@ 
-  (unit 
-    (import drracket:tool^)
+(define-unit gui@
+    (import drracket:tool^ blueboxes-gui^)
     (export drracket:tool-exports^)
     
     (define (phase1) 
@@ -378,7 +377,7 @@ If the namespace does not, they are colored the unbound color.
       (λ (super%)
         (define cursor-arrow (make-object cursor% 'arrow))
         (docs-text-defs-mixin
-          (class* super% ()
+          (class* super% (annotations<%>)
             (inherit set-cursor get-admin invalidate-bitmap-cache set-position
                      get-pos/text-dc-location position-location
                      get-canvas last-position dc-location-to-editor-location
@@ -386,10 +385,22 @@ If the namespace does not, they are colored the unbound color.
                      highlight-range unhighlight-range
                      paragraph-end-position first-line-currently-drawn-specially?
                      line-end-position position-line
-                     get-padding)
+                     get-padding get-tab)
 
             (define annotations #f)
             (define/public (get-annotations) annotations)
+            (define/public (set-annotations _annotations)
+              (unless (eq? _annotations annotations)
+                (set! annotations _annotations)
+                (after-annotations-change)))
+            (define/pubment (after-annotations-change)
+              ;; called when we've finished computing an ann object
+              ;; needs to reset the GUI's state
+              (define tab (get-tab))
+              (syncheck:update-drawn-arrows)
+              (send tab remove-bkg-running-color 'syncheck)
+              (send (send tab get-frame) set-syncheck-running-mode #f)
+              (inner (void) after-annotations-change))
 
             ;; cleanup-texts : (or/c #f (listof text))
             (define cleanup-texts #f)
@@ -2232,7 +2243,7 @@ If the namespace does not, they are colored the unbound color.
     (drracket:module-language-tools:add-online-expansion-handler
      online-comp.rkt
      'go
-     void)))
+     void))
 
 (define wbs '())
     

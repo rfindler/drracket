@@ -23,6 +23,12 @@
 ;;  - audit names in `define-local-member-name` in blueboxes-gui.rkt
 ;;  - clear-docs-range and on-insert and on-delete in blueboxes gui need
 ;;    to make their way into the annotations object
+;;  - need to make the handling of insertion and deletion
+;;    (forwarding to the underlying annotations object)
+;;    happen in gui.rkt, not in blue-boxes-gui.rkt
+;;    (it used to be only used for require candiates but maybe we'll generalize?)
+;;  - test that f2 works to show and hide the blueboxes in both windows
+;;  - check the new names in local-member-names.rkt to see if they're used
 
 (provide (struct-out arrow)
          (struct-out var-arrow)
@@ -33,7 +39,8 @@
          cs-check-syntax-background-colors
          ann-monitor-start
          ann-monitor-done
-         ann-monitor)
+         ann-monitor
+         annotations<%>)
 
 (define cs-check-syntax-background-colors
   (hash 'matching-identifiers 'drracket:syncheck:matching-identifiers
@@ -471,18 +478,11 @@
           (let ([defs-text defs-text])
             (queue-callback
              (λ ()
-               (finished-building-ann defs-text))))
+               (send defs-text set-annotations val))))
           (set! ann-object-building-thread #f)
           (set! ann-object-building-chan #f)
           (set! defs-text #f)
           (loop))))))))
-
-(define (finished-building-ann defs-text)
-  (send defs-text syncheck:update-blue-boxes (send (send defs-text get-tab) get-ints))
-  (send defs-text syncheck:update-drawn-arrows)
-  (define tab (send defs-text get-tab))
-  (send tab remove-bkg-running-color 'syncheck)
-  (send (send tab get-frame) set-syncheck-running-mode #f))
 
 (define (build-ann-object defs-text val)
   (define known-dead-place-channels (make-hasheq))

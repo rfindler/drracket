@@ -7,9 +7,11 @@
          racket/match
          racket/runtime-path
          racket/set
+         racket/unit
          data/interval-map
          images/icons/misc
          drracket/private/rectangle-intersect
+         drracket/tool
          string-constants
          framework/private/logging-timer
          scribble/blueboxes
@@ -17,15 +19,10 @@
          browser/external
          setup/xref
          scribble/xref
-         setup/collects)
-(provide docs-text-defs-mixin
-         docs-text-ints-mixin
-         docs-editor-canvas-mixin
-         syncheck:add-docs-range
-         syncheck:add-require-candidate
-         syncheck:reset-docs-im
-         syncheck:update-blue-boxes
-         disable-blue-boxes)
+         setup/collects
+         "intf.rkt"
+         "local-member-names.rkt")
+(provide blueboxes-gui@)
 
 (define sc-f2-to-lock (string-constant sc-f2-to-un/lock))
 (define sc-read-more... (string-constant sc-read-more...))
@@ -82,18 +79,14 @@
 (define-local-member-name
   get-show-docs?
   get-current-strs
-  syncheck:reset-docs-im
-  syncheck:add-docs-range
-  syncheck:add-require-candidate
-  syncheck:update-blue-boxes
-  get-docs-im
-  get/start-docs-im
   get-require-candidates
-  get-path->pkg-cache
   set-original-info-text
   add-linked
-  update-the-strs
-  disable-blue-boxes)
+  update-the-strs)
+
+(define-unit blueboxes-gui@
+  (import drracket:tool^)
+  (export blueboxes-gui^)
 
 (define docs-ec-clipping-region #f)
 (define docs-ec-last-cw #f)
@@ -172,20 +165,11 @@
       (super on-paint))
     (super-new)))
 
-(define annotations<%>
-  (interface ()
-    get-docs-im-info
-    get-require-candidates))
-
 (define docs-text-info<%>
   (interface ()
-    get-docs-im
-    get/start-docs-im
+    get-docs-im-info
     get-require-candidates
-    get-path->pkg-cache
-    update-the-strs
-    disable-blue-boxes
-    toggle-syncheck-docs))
+    get-path->pkg-cache))
 
 (define docs-text-gui-mixin
   (mixin (color:text<%> docs-text-info<%>) ()
@@ -196,10 +180,9 @@
              invalidate-bitmap-cache get-text
              is-stopped? is-frozen? is-lexer-valid?
              classify-position get-token-range
-             get-path->pkg-cache
-
              get-require-candidates
-             get-docs-im-info)
+             get-docs-im-info
+             get-path->pkg-cache)
     
     (define locked? (preferences:get 'drracket:syncheck:contracts-locked?))
     (define mouse-in-blue-box? #f)
@@ -228,7 +211,7 @@
         (send-url (url->string url2))))
     
     (define/public (get-show-docs?) (and the-strs (or locked? mouse-in-blue-box?)))
-    (define/augment (toggle-syncheck-docs)
+    (define/pubment (toggle-syncheck-docs)
       (begin-edit-sequence #t #f)
       (invalidate-blue-box-region)
       (cond
@@ -268,7 +251,7 @@
         (set! mouse-in-read-more? rm?)
         (invalidate-blue-box-region)
         (end-edit-sequence)))
-    
+
     (define/private (invalidate-blue-box-region)
       (define c (get-canvas))
       (when c (send c refresh))
@@ -457,12 +440,12 @@
 
     (define update-the-strs-coroutine #f)
 
-    (define/override (disable-blue-boxes)
+    (define/public (disable-blue-boxes)
       (invalidate-blue-box-region)
       (set! update-the-strs-coroutine #f)
       (set! the-strs #f))
     
-    (define/override (update-the-strs)
+    (define/public (update-the-strs)
       (unless update-the-strs-coroutine
         (set! update-the-strs-coroutine
               (coroutine
@@ -592,18 +575,6 @@
               [else #f])]
           [else #f])))
     
-    (define/augment (on-insert where len)
-      (define ann (get-annotations))
-      (when ann
-        (send ann insertion where len))
-      (inner (void) on-insert where len))
-    
-    (define/augment (on-delete where len)
-      (define ann (get-annotations))
-      (when ann
-        (send ann deletion where len))
-      (inner (void) on-delete where len))
-    
     (define/private (in-blue-box? evt)
       (cond
         [(send evt leaving?) #f]
@@ -648,71 +619,60 @@
 
     (super-new)))
 
-(define docs-text-original-info-mixin
-  (mixin (annotations<%>) (docs-text-info<%>)
-    (define require-candidates '())
+(define docs-text-defs-info-mixin
+  (mixin (annotations<%> drracket:unit:definitions-text<%>) (docs-text-info<%>)
+    (inherit get-annotations get-tab)
+    (define/public (get-docs-im-info pos)
+      (define ann (get-annotations))
+      (and ann (send ann get-docs-im-info pos)))
+    (define/public (get-require-candidates)
+      (define ann (get-annotations))
+      (cond
+        [ann (send ann require-candidates)]
+        [else (set)]))
     (define path->pkg-cache (make-hash))
-    (define linked-texts '())
     (define/public (get-path->pkg-cache) path->pkg-cache)
-    (define/public (syncheck:reset-docs-im)
-      (set! require-candidates '())
-      (set! path->pkg-cache (make-hash)))
-    (define/public (syncheck:add-require-candidate path)
-      (set! require-candidates (set-add require-candidates path)))
-    (define/public (get-require-candidates) require-candidates)
-    (define/public (syncheck:update-blue-boxes other-text)
-      (update-the-strs)
-      (send other-text set-original-info-text this)
-      (send other-text update-the-strs))
-    (define/public (add-linked t)
-      (unless (memq t linked-texts)
-        (set! linked-texts (cons t linked-texts))))
-    (define/public (update-the-strs) (void))
-    (define/public (disable-blue-boxes) (void))
-    (define/pubment (toggle-syncheck-docs)
-      (inner (void) toggle-syncheck-docs)
-      (for ([t (in-list linked-texts)])
-        (send t toggle-syncheck-docs)))
+
+    (define/augment (after-annotations-change)
+      (inner (void) after-annotations-change)
+      ;; this `send this` is ugly but it
+      ;; breaks a kind of cycle here.
+      (send this update-the-strs)
+      (define ints (send (get-tab) get-ints))
+      (send ints set-original-info-text this)
+      (send ints update-the-strs))
+
     (super-new)))
 
 ;; this is used for the REPL -- so all of the interval map state
 ;; isn't correct, only the require candidates are right; so we just
 ;; return empty things here.
-(define docs-text-linked-info-mixin
-  (mixin (annotations<%>) (docs-text-info<%>)
+(define docs-text-ints-info-mixin
+  (mixin (drracket:rep:text<%>) (docs-text-info<%>)
     (define original-info-text #f)
     (define/public (set-original-info-text info-text)
-      ;; the twisty way this is set up means that
-      ;; this method is called multiple times with
-      ;; the same argument
-      (set! original-info-text info-text)
-      (send original-info-text add-linked this))
-    (define/public (get-path->pkg-cache)
-      (if original-info-text
-          (send original-info-text get-path->pkg-cache)
-          (make-hash)))
-    (define empty-interval-map (make-interval-map))
-    (define/public (get-docs-im) empty-interval-map)
-    (define/public (get/start-docs-im) empty-interval-map)
+      (set! original-info-text info-text))
+
+    (define/public (get-docs-im-info pos) #f)
     (define/public (get-require-candidates)
-      (if original-info-text
-          (send original-info-text get-require-candidates)
-          '()))
-    (define/public (update-the-strs) (void))
-    (define/public (disable-blue-boxes) (void))
-    (define/pubment (toggle-syncheck-docs)
-      (inner (void) toggle-syncheck-docs))
+      (cond
+        [original-info-text
+         (send original-info-text require-candidates)]
+        [else (set)]))
+    (define/public (get-path->pkg-cache)
+      (and original-info-text
+           (send original-info-text get-path->pkg-cache)))
     (super-new)))
 
 (define (docs-text-defs-mixin %)
   (docs-text-gui-mixin
-   (docs-text-original-info-mixin
+   (docs-text-defs-info-mixin
     %)))
 
 (define (docs-text-ints-mixin %)
   (docs-text-gui-mixin
-   (docs-text-linked-info-mixin
-    %)))
+   (docs-text-ints-info-mixin
+    %))))
 
 ;; (is-a/c? docs-text-info<%>) -> (or/c #f blueboxes-cache)
 ;; when this returns #f the cache needs

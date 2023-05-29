@@ -37,4 +37,12 @@
   
   set-syncheck-mode
   get-syncheck-mode
-  update-menu-status)
+  update-menu-status
+
+  get-annotations
+
+  syncheck:add-docs-range
+  syncheck:add-require-candidate
+  syncheck:reset-docs-im
+  syncheck:update-blue-boxes
+  disable-blue-boxes)

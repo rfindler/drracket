@@ -1,6 +1,8 @@
 #lang racket/base
-(provide syncheck-text<%>) 
+(provide syncheck-text<%> annotations<%>
+         blueboxes-gui^)
 (require racket/class 
+         racket/unit
          drracket/private/syncheck/syncheck-intf
          "local-member-names.rkt")
 
@@ -15,3 +17,18 @@
     syncheck:jump-to-definition
     syncheck:rename-identifier
     syncheck:tack/untack-arrows))
+
+
+;; implemented by the editor object that
+;; holds the annotations object, but put
+;; here for dependencies reasons
+(define annotations<%>
+  (interface ()
+    get-annotations
+    set-annotations
+    after-annotations-change))
+
+(define-signature blueboxes-gui^
+  (docs-text-defs-mixin
+   docs-text-ints-mixin
+   docs-editor-canvas-mixin))
