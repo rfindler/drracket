@@ -271,7 +271,7 @@ Will not work with the definitions text surrogate interposition that
      (or val (list #\" #\|))]
     [(drracket:comment-delimiters)
      (or val '((line ";;" " ")
-               (region "#|" "|#" "  " " ")))]
+               (region "#|" "  " "|#" " ")))]
     [(drracket:define-popup)
      (and val
           (for/list ([val (in-list val)])
