@@ -4,7 +4,6 @@
          "insulated-read-language.rkt"
          racket/gui/base
          racket/pretty)
-(provide run-some-user-code)
 
 #|
 
@@ -12,6 +11,12 @@ This file contains helper routines used by the module-language to read and run
 a program. It also gets used when drracket runs a program in a separate process.
 
 |#
+
+(provide run-some-user-code
+         front-end/complete-program)
+
+(define orig-error-port (current-error-port))
+(define (oeprintf . args) (apply fprintf orig-error-port args))
 
 ;; this is expected to be called on the user's thread to run the code in
 ;; the definitions window or in the interactions window; it is called from
@@ -82,8 +87,8 @@ a program. It also gets used when drracket runs a program in a separate process.
 (define (front-end/complete-program get-reader path get-pre-compiled submodules-to-run
                                     drracket:init:system-eventspace
                                     raise-hopeless-exception raise-hopeless-syntax-error
-                                    port settings [the-irl #f])
-  (define (super-thunk) 
+                                    port [the-irl #f])
+  (define (super-thunk)
     (define reader (get-reader))
     (reader (object-name port) port))
   (define resolved-modpath (and path (module-path-index-resolve

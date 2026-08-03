@@ -28,6 +28,7 @@
          "local-member-names.rkt"
          (prefix-in lmn: "local-member-names.rkt")
          "insulated-read-language.rkt"
+         (prefix-in rmlp: "run-module-language-program.rkt")
          drracket/private/rectangle-intersect
          pkg/lib
          pkg/gui
@@ -422,123 +423,17 @@
       ;; drracket will always supply `the-irl`, but some tools might call this,
       ;; and they might not supply it
       (define/override (front-end/complete-program port settings [the-irl #f])
-        (define (super-thunk) 
-          (define reader (get-reader))
-          (reader (object-name port) port))
         (define path
-          (cond [(get-filename port) => (compose simplify-path cleanse-path)]
+          (cond [(get-filename-from-definitions port) => (compose simplify-path cleanse-path)]
                 [else #f]))
-        (define resolved-modpath (and path (module-path-index-resolve
-                                            (module-path-index-join
-                                             path
-                                             #f))))
-
-        (define-values (name lang module-expr)
-          (cond
-            [(and (equal? (drracket:language:get-simple-settings-annotations settings the-irl) 'none)
-                  (drracket:rep:current-pre-compiled-transform-module-results))
-             =>
-             (λ (transform-module-results)
-               (define compiled-expression
-                 (parameterize ([read-accept-compiled #t])
-                   (read (open-input-bytes (vector-ref transform-module-results 2)))))
-               (values
-                (vector-ref transform-module-results 0)
-                (vector-ref transform-module-results 1)
-                (with-syntax ([x compiled-expression]) #'x)))]
-            [else
-             (define expr
-               ;; just reading the definitions might be a syntax error,
-               ;; possibly due to bad language (eg, no foo/lang/reader)
-               (with-handlers ([exn:fail? (λ (e) (raise-hopeless-exception e))])
-                 (super-thunk)))
-             (when (eof-object? expr)
-               (raise-hopeless-syntax-error (string-append
-                                             "There must be a valid module in the\n"
-                                             "definitions window.  Try starting your program with\n"
-                                             "\n"
-                                             "  #lang racket\n"
-                                             "or\n"
-                                             "  #lang htdp/bsl\n"
-                                             "\n"
-                                             "and clicking ‘Run’.")))
-             (let ([more (super-thunk)])
-               (unless (eof-object? more)
-                 (raise-hopeless-syntax-error
-                  "there can only be one expression in the definitions window"
-                  more)))
-             (transform-module path expr raise-hopeless-syntax-error)]))
-
-        (define modspec (or path `',name))
-        (define (check-interactive-language)
-          (unless (memq '#%top-interaction (namespace-mapped-symbols))
-            (raise-hopeless-exception
-             #f ; no error message, just a suffix
-             (format "~s does not support a REPL (no #%top-interaction)"
-                     lang))))
-        ;; We're about to send the module expression to drracket now, the rest
-        ;; of the setup is done in `front-end/finished-complete-program' below,
-        ;; so use `repl-init-thunk' to store an appropriate continuation for
-        ;; this setup.  Once we send the expression, we'll be called again only
-        ;; if it was evaluated (or expanded) with no errors, so begin with a
-        ;; continuation that deals with an error, and if we're called again,
-        ;; change it to a continuation that initializes the repl for the
-        ;; module.  So the code is split among several thunks that follow.
-        (define (*pre)
-          (thread-cell-set! repl-init-thunk *error)
-          (current-module-declare-name resolved-modpath)
-          (current-module-declare-source path))
-        (define (*post)
-          (current-module-declare-name #f)
-          (current-module-declare-source #f)
-          (when path ((current-module-name-resolver) resolved-modpath #f))
-          (thread-cell-set! repl-init-thunk *init))
-        (define (*error)
-          (current-module-declare-name #f)
-          (current-module-declare-source #f)
-          ;; syntax error => try to require the language to get a working repl
-          (with-handlers ([void (λ (e)
-                                  (raise-hopeless-syntax-error
-                                   "invalid language specification"
-                                   lang))])
-            (namespace-require lang))
-          (check-interactive-language))
-        (define (*init)
-          (parameterize ([current-namespace (current-namespace)])
-            ;; the prompt makes it continue after an error
-            (call-with-continuation-prompt
-             (λ () (with-stack-checkpoint 
-                    (begin
-                      (*do-module-specified-configuration)
-                      (namespace-require modspec)
-                      (for ([submod (in-list (module-language-settings-submodules-to-run settings))])
-                        (define submod-spec `(submod ,modspec ,@submod))
-                        (when (module-declared? submod-spec)
-                          (dynamic-require submod-spec #f))))))))
-          (current-namespace (module->namespace modspec))
-          (check-interactive-language))
-        (define (*do-module-specified-configuration)
-          (define info (module->language-info modspec #t))
-          (unless (mcli? info) (set! info #f))
-          (when the-irl
-            (parameterize ([current-eventspace drracket:init:system-eventspace])
-              (queue-callback
-               (λ () (set-irl-mcli-vec! the-irl info)))))
-          (when info
-            (let ([get-info
-                   ((dynamic-require (vector-ref info 0)
-                                     (vector-ref info 1))
-                    (vector-ref info 2))])
-              (let ([configs (get-info 'configure-runtime '())])
-                (for ([config (in-list configs)])
-                  ((dynamic-require (vector-ref config 0)
-                                    (vector-ref config 1))
-                   (vector-ref config 2))))))
-          (define cr-submod `(submod ,modspec configure-runtime))
-          (when (module-declared? cr-submod)
-            (dynamic-require cr-submod #f)))
-        ;; here's where they're all combined with the module expression
-        (expr-getter *pre module-expr *post))
+        (rmlp:front-end/complete-program
+         (λ () (get-reader)) path
+         (λ () (and (equal? (drracket:language:get-simple-settings-annotations settings the-irl) 'none)
+                    (drracket:rep:current-pre-compiled-transform-module-results)))
+         (module-language-settings-submodules-to-run settings)
+         drracket:init:system-eventspace
+         raise-hopeless-exception raise-hopeless-syntax-error
+         port the-irl))
       
       (define/override (front-end/finished-complete-program settings)
         (cond [(thread-cell-ref repl-init-thunk)
@@ -1101,9 +996,9 @@
        submods]
       [else #f]))
   
-  ;; get-filename : port -> (union string #f)
+  ;; get-filename-from-definitions : port -> (union string #f)
   ;; extracts the file the definitions window is being saved in, if any.
-  (define (get-filename port)
+  (define (get-filename-from-definitions port)
     (let ([source (object-name port)])
       (cond
         [(path? source) source]

@@ -129,7 +129,9 @@
    error-message%
 
    disable-debugging-et-al
-   get-preferred-lang-line))
+   get-preferred-lang-line
+   get-filename-from-definitions
+   module-language-settings-submodules-to-run))
 
 (define-signature drracket:module-language-tools-cm^
   (frame-mixin
@@ -178,6 +180,7 @@
    system-namespace
    system-security-guard
    system-inspector
+   system-exec-file-path
    first-dir))
 
 (define-signature drracket:language-configuration-cm^

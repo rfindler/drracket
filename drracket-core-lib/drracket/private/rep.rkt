@@ -22,7 +22,7 @@ TODO
          racket/list
          racket/port
          racket/set
-         
+         racket/match
          string-constants
          setup/xref
          racket/gui/base
@@ -1197,28 +1197,51 @@ TODO
          (λ () ; =User=, =Handler=, =No-Breaks=
            (define lang (drracket:language-configuration:language-settings-language (current-language-settings)))
            (define settings (drracket:language-configuration:language-settings-settings (current-language-settings)))
-           (define dummy-value (box #f))
-           (define get-sexp/syntax/eof 
-             (if complete-program?
-                 (parameterize ([current-pre-compiled-transform-module-results
-                                 pre-compiled-transform-module-results])
-                   (if (is-a? lang drracket:module-language:module-language<%>)
-                       (send lang front-end/complete-program port settings the-irl)
-                       (send lang front-end/complete-program port settings)))
-                 (send lang front-end/interaction port settings)))
+           (cond
+             [user-subprocess+ports
+              (match-define (list separate-process stdin finished-evaluation-chan) user-subprocess+ports)
+              (define path
+                (cond [(drracket:module-language:get-filename-from-definitions port) => (compose simplify-path cleanse-path)]
+                      [else #f]))
+              (define bp (open-output-bytes))
+              (copy-port port bp)
+              (cond
+                [complete-program?
+                 (writeln `("complete-program"
+                            ,pretty-print-width
+                            ,(drracket:module-language:module-language-settings-submodules-to-run settings)
+                            ,(and path (path->bytes path))
+                            ,(get-output-bytes bp))
+                          stdin)]
+                [else
+                 (writeln `("interaction"
+                            ,pretty-print-width
+                            ,(get-output-bytes bp))
+                          stdin)])
+              (flush-output stdin)
+              (channel-get finished-evaluation-chan)]
+             [else
+              (define get-sexp/syntax/eof 
+                (if complete-program?
+                    (parameterize ([current-pre-compiled-transform-module-results
+                                    pre-compiled-transform-module-results])
+                      (if (is-a? lang drracket:module-language:module-language<%>)
+                          (send lang front-end/complete-program port settings the-irl)
+                          (send lang front-end/complete-program port settings)))
+                    (send lang front-end/interaction port settings)))
 
-           (run-some-user-code user-break-parameterization outermost pretty-print-width
-                               get-sexp/syntax/eof)
+              (run-some-user-code user-break-parameterization outermost pretty-print-width
+                                  get-sexp/syntax/eof)
 
-           (when complete-program?
-             (call-with-continuation-prompt
-              (λ ()
-                (call-with-break-parameterization
-                 user-break-parameterization
+              (when complete-program?
+                (call-with-continuation-prompt
                  (λ ()
-                   (send lang front-end/finished-complete-program settings))))
-              (default-continuation-prompt-tag)
-              (λ args (void))))
+                   (call-with-break-parameterization
+                    user-break-parameterization
+                    (λ ()
+                      (send lang front-end/finished-complete-program settings))))
+                 (default-continuation-prompt-tag)
+                 (λ args (void))))])
 
            (when the-after-expression
              (call-with-continuation-prompt
@@ -1279,8 +1302,9 @@ TODO
                  (let ([ut (get-user-thread)])
                    (sync (thread-suspend-evt ut)
                          (thread-dead-evt ut)
-                         subprocess
-                         )
+                         (if user-subprocess+ports
+                             (list-ref user-subprocess+ports 0)
+                             never-evt))
                    (queue-system-callback
                     ut
                     (λ () ; =Kernel=, =Handler=
@@ -1302,6 +1326,8 @@ TODO
       
       (define/private (init-evaluation-thread) ; =Kernel=
         (set! user-language-settings (send definitions-text get-next-settings))
+        (define lang (drracket:language-configuration:language-settings-language user-language-settings))
+        (define settings (drracket:language-configuration:language-settings-settings user-language-settings))
         
         (set! user-custodian-parent (make-custodian))
         (set! user-custodian (parameterize ([current-custodian user-custodian-parent])
@@ -1334,10 +1360,6 @@ TODO
                  [(and (outermost)
                        (syntax? sexp/syntax)
                        (not (compiled-expression? (syntax-e sexp/syntax))))
-                  (oprintf "called current-eval ~s\n" sexp/syntax)
-                  (for ([x (in-list (continuation-mark-set->context (current-continuation-marks)))])
-                    (oprintf "  ~s\n" x))
-                  (oprintf "\n")
                   (parameterize ([outermost #f])
                     (call-with-continuation-prompt
                      (λ ()
@@ -1351,6 +1373,35 @@ TODO
                  [else
                   (oe sexp/syntax)]))
              drracket-eval-handler))
+
+          (when (and (preferences:get 'drracket:run-in-separate-process)
+                     (is-a? lang drracket:module-language:module-language<%>))
+            (parameterize ([current-custodian user-custodian])
+              (define-values (separate-process stdout stdin stderr)
+                (subprocess #f #f #f 'new drracket:init:system-exec-file-path #"-l" #"drracket/private/user-in-separate-process.rkt"))
+              (define finished-evaluation-chan (make-channel))
+              (thread
+               (λ ()
+                 ;; this probably isn't quite the right idea,
+                 ;; as it redirects what are internal errors
+                 ;; possibly into the bit bucket; they should
+                 ;; be shown to the user of drracket
+                 (copy-port stderr drracket:init:original-error-port)))
+              (thread
+               (λ ()
+                 (let loop ()
+                   (match (read stdout)
+                     [(? eof-object?) (void)]
+                     [`("stdout" ,btes)
+                      (write-bytes btes (get-out-port))
+                      (loop)]
+                     [`("stderr" ,btes)
+                      (write-bytes btes (get-err-port))
+                      (loop)]
+                     [`("finished-evaluation")
+                      (channel-put finished-evaluation-chan (void))
+                      (loop)]))))
+              (set! user-subprocess+ports (list separate-process stdin finished-evaluation-chan))))
           
           (let* ([init-thread-complete (make-semaphore 0)]
                  [goahead (make-semaphore)])
@@ -1413,8 +1464,6 @@ TODO
                  (λ ()
                    (with-handlers ((exn? (λ (x) (oprintf "~s\n" (exn-message x)))))
                      (t)))))
-              (define lang (drracket:language-configuration:language-settings-language user-language-settings))
-              (define settings (drracket:language-configuration:language-settings-settings user-language-settings))
               (cond
                 [(is-a? lang drracket:module-language:module-language<%>)
                  (send lang
