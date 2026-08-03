@@ -15,9 +15,6 @@ a program. It also gets used when drracket runs a program in a separate process.
 (provide run-some-user-code
          front-end/complete-program)
 
-(define orig-error-port (current-error-port))
-(define (oeprintf . args) (apply fprintf orig-error-port args))
-
 ;; this is expected to be called on the user's thread to run the code in
 ;; the definitions window or in the interactions window; it is called from
 ;; evaluate-from-port and abstracted here to be shared in user-in-separate-process.rkt
@@ -82,11 +79,9 @@ a program. It also gets used when drracket runs a program in a separate process.
     (for ([x (in-list last-results)])
       ((current-print) x))))
 
-(define repl-init-thunk (make-thread-cell #f))
-
 (define (front-end/complete-program get-reader path get-pre-compiled submodules-to-run
                                     drracket:init:system-eventspace
-                                    raise-hopeless-exception raise-hopeless-syntax-error
+                                    raise-hopeless-exception raise-hopeless-syntax-error repl-init-thunk
                                     port [the-irl #f])
   (define (super-thunk)
     (define reader (get-reader))

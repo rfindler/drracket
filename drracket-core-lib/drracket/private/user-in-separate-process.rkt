@@ -2,7 +2,6 @@
 (require "run-module-language-program.rkt"
          racket/match)
 
-
 (define original-output-port (current-output-port))
 (define original-error-port (current-error-port))
 
@@ -44,6 +43,7 @@ for bugs in this code to hopefully have some useful debugging information
                          bts
                          (subbytes bts 0 res)))
             original-output-port)
+           (flush-output original-output-port)
            (loop)]))))))
 
 (forward-output-back current-output-pipe-in "stdout")
@@ -89,6 +89,7 @@ for bugs in this code to hopefully have some useful debugging information
          (if (eof-object? v)
              v
              (namespace-syntax-introduce v))))
+     (define repl-init-thunk (make-thread-cell #f))
      (define get-sexp/syntax/eof
        (front-end/complete-program get-reader
                                    path
@@ -96,6 +97,7 @@ for bugs in this code to hopefully have some useful debugging information
                                    submodules-to-run
                                    'drracket:init:system-eventspace ;; ignored when the-irl is #f
                                    raise-hopeless-exception raise-hopeless-syntax-error
+                                   repl-init-thunk
                                    (open-input-bytes the-bytes path)
                                    #f ;; the-irl
                                    ))
@@ -103,9 +105,23 @@ for bugs in this code to hopefully have some useful debugging information
                          outermost
                          pretty-print-width
                          get-sexp/syntax/eof)
+
+     ;; this prompt is the same as in rep.rkt in evaluate-from-port
+     (call-with-continuation-prompt
+      (λ ()
+        (call-with-break-parameterization
+         user-break-parameterization
+         (λ ()
+           ;; this is the module language's front-end/finished-complete-program
+           (cond [(thread-cell-ref repl-init-thunk)
+                  => (λ (t) (thread-cell-set! repl-init-thunk #f) (t))]))))
+      (default-continuation-prompt-tag)
+      (λ args (void)))
+          
      (flush-output current-output-pipe-out)
      (flush-output current-error-pipe-out)
      (writeln `("finished-evaluation") original-output-port)
+     (flush-output original-output-port)
      (loop)]
     [(? eof-object?)
      (exit 0)]))

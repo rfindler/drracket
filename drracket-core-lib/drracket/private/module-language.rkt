@@ -433,6 +433,7 @@
          (module-language-settings-submodules-to-run settings)
          drracket:init:system-eventspace
          raise-hopeless-exception raise-hopeless-syntax-error
+         repl-init-thunk
          port the-irl))
       
       (define/override (front-end/finished-complete-program settings)
