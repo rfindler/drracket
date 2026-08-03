@@ -29,10 +29,12 @@ TODO
          framework
          browser/external
          drracket/private/drsig
+         "eval-helpers-and-pref-init.rkt"
          "local-member-names.rkt"
          "stack-checkpoint.rkt"
          "parse-logger-args.rkt"
          "insulated-read-language.rkt"
+         "run-module-language-program.rkt"
          
          ;; the dynamic-require below loads this module, 
          ;; so we make the dependency explicit here, even
@@ -889,6 +891,7 @@ TODO
                                    (preferences:get 'drracket:child-only-memory-limit)))
              (user-eventspace-box (make-weak-box #f))
              (user-namespace-box (make-weak-box #f))
+             (user-subprocess+ports #f)
              (user-eventspace-main-thread #f)
              (user-break-parameterization #f)
              (user-logger drracket:init:system-logger) ;; for now, just let all messages be everywhere
@@ -903,6 +906,7 @@ TODO
       (define/public (get-user-eventspace) (weak-box-value user-eventspace-box))
       (define/public (get-user-thread) user-eventspace-main-thread)
       (define/public (get-user-namespace) (weak-box-value user-namespace-box))
+      (define/public (get-user-subprocess+ports) user-subprocess+ports)
       (define/pubment (get-user-break-parameterization) user-break-parameterization) ;; final method
       (define/pubment (get-custodian-limit) custodian-limit)
       (define/pubment (set-custodian-limit c) (set! custodian-limit c))
@@ -1191,105 +1195,47 @@ TODO
         (define the-irl (send definitions-text get-irl))
         (run-in-evaluation-thread
          (λ () ; =User=, =Handler=, =No-Breaks=
-           (let* ([settings (current-language-settings)]
-                  [lang (drracket:language-configuration:language-settings-language settings)]
-                  [settings (drracket:language-configuration:language-settings-settings settings)]
-                  [dummy-value (box #f)]
-                  [get-sexp/syntax/eof 
-                   (if complete-program?
-                       (parameterize ([current-pre-compiled-transform-module-results
-                                       pre-compiled-transform-module-results])
-                         (if (is-a? lang drracket:module-language:module-language<%>)
-                             (send lang front-end/complete-program port settings the-irl)
-                             (send lang front-end/complete-program port settings)))
-                       (send lang front-end/interaction port settings))])
-             
-             ; Evaluate the user's expression. We're careful to turn on
-             ;   breaks as we go in and turn them off as we go out.
-             ;   (Actually, we adjust breaks however the user wanted it.)
-             
-             
-             ;; this binding of last-results is to catch the results 
-             ;; that come from throwing to the prompt instead of
-             ;; a normal exit
-             (define last-results
-               (call-with-values
-                (λ ()
-                  (call-with-continuation-prompt
-                   (λ ()
-                     (call-with-break-parameterization
-                      user-break-parameterization
-                      (λ ()
-                        (let loop ()
-                          (define sexp/syntax/eof (with-stack-checkpoint (get-sexp/syntax/eof)))
-                          (cond
-                            [(eof-object? sexp/syntax/eof) (abort-current-continuation 
-                                                            (default-continuation-prompt-tag)
-                                                            (λ () (values)))]
-                            [else
-                             (define results
-                               (call-with-values
-                                (λ ()
-                                  (parameterize ([outermost #t])
-                                    (with-stack-checkpoint
-                                        (eval-syntax sexp/syntax/eof))))
-                                list))
-                             (parameterize ([pretty-print-columns pretty-print-width])
-                               (for ([x (in-list results)])
-                                 ((current-print) x)))
-                             (loop)])))))
-                   (default-continuation-prompt-tag)
-                   (letrec ([me
-                             (λ args
-                               (cond
-                                 [(and (pair? args)
-                                       (null? (cdr args))
-                                       (procedure? (car args))
-                                       (procedure-arity-includes? (car args) 0))
-                                  (call-with-continuation-prompt (car args) 
-                                                                 (default-continuation-prompt-tag)
-                                                                 me)]
-                                 [else
-                                  (call-with-continuation-prompt
-                                   (λ ()
-                                     (call-with-continuation-prompt
-                                      (λ ()
-                                        (apply
-                                         abort-current-continuation 
-                                         (default-continuation-prompt-tag)
-                                         args)))))]))])
-                     me)))
-                list))
-             (parameterize ([pretty-print-columns pretty-print-width])
-               (for ([x (in-list last-results)])
-                 ((current-print) x)))
-             
-             (when complete-program?
-               (call-with-continuation-prompt
-                (λ ()
-                  (call-with-break-parameterization
-                   user-break-parameterization
-                   (λ ()
-                     (send lang front-end/finished-complete-program settings))))
-                (default-continuation-prompt-tag)
-                (λ args (void))))
-             
-             (when the-after-expression 
-               (call-with-continuation-prompt
-                (λ () 
-                  (the-after-expression))))
-             
-             (set! in-evaluation? #f)
-             (update-running #f)
-             (cleanup)
-             (flush-output (get-value-port))
-             (queue-system-callback/sync
-              (get-user-thread)
-              (λ () ; =Kernel=, =Handler= 
-                (parameterize ([module-language-initial-run current-module-language-initial-run])
-                  (after-many-evals)
-                  (cleanup-interaction))
-                (insert-prompt)))))))
+           (define lang (drracket:language-configuration:language-settings-language (current-language-settings)))
+           (define settings (drracket:language-configuration:language-settings-settings (current-language-settings)))
+           (define dummy-value (box #f))
+           (define get-sexp/syntax/eof 
+             (if complete-program?
+                 (parameterize ([current-pre-compiled-transform-module-results
+                                 pre-compiled-transform-module-results])
+                   (if (is-a? lang drracket:module-language:module-language<%>)
+                       (send lang front-end/complete-program port settings the-irl)
+                       (send lang front-end/complete-program port settings)))
+                 (send lang front-end/interaction port settings)))
+
+           (run-some-user-code user-break-parameterization outermost pretty-print-width
+                               get-sexp/syntax/eof)
+
+           (when complete-program?
+             (call-with-continuation-prompt
+              (λ ()
+                (call-with-break-parameterization
+                 user-break-parameterization
+                 (λ ()
+                   (send lang front-end/finished-complete-program settings))))
+              (default-continuation-prompt-tag)
+              (λ args (void))))
+
+           (when the-after-expression
+             (call-with-continuation-prompt
+              (λ ()
+                (the-after-expression))))
+
+           (set! in-evaluation? #f)
+           (update-running #f)
+           (cleanup)
+           (flush-output (get-value-port))
+           (queue-system-callback/sync
+            (get-user-thread)
+            (λ () ; =Kernel=, =Handler=
+              (parameterize ([module-language-initial-run current-module-language-initial-run])
+                (after-many-evals)
+                (cleanup-interaction))
+              (insert-prompt))))))
       
       ;; =User=, =Handler=
       (define/pubment (on-execute rout) (inner (void) on-execute rout))
@@ -1332,7 +1278,9 @@ TODO
                (λ () ; =Kernel=
                  (let ([ut (get-user-thread)])
                    (sync (thread-suspend-evt ut)
-                         (thread-dead-evt ut))
+                         (thread-dead-evt ut)
+                         subprocess
+                         )
                    (queue-system-callback
                     ut
                     (λ () ; =Kernel=, =Handler=
@@ -1386,6 +1334,10 @@ TODO
                  [(and (outermost)
                        (syntax? sexp/syntax)
                        (not (compiled-expression? (syntax-e sexp/syntax))))
+                  (oprintf "called current-eval ~s\n" sexp/syntax)
+                  (for ([x (in-list (continuation-mark-set->context (current-continuation-marks)))])
+                    (oprintf "  ~s\n" x))
+                  (oprintf "\n")
                   (parameterize ([outermost #f])
                     (call-with-continuation-prompt
                      (λ ()
@@ -1456,6 +1408,7 @@ TODO
             ;; initialize the language
             (let ()
               (define (run-on-user-thread t)
+                (oprintf "r-o-u-t ~s\n" t)
                 (queue-user/wait
                  (λ ()
                    (with-handlers ((exn? (λ (x) (oprintf "~s\n" (exn-message x)))))
