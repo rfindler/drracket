@@ -324,7 +324,8 @@
                 (module-language-settings-compilation-on? settings)
                 (module-language-settings-full-trace? settings)
                 (module-language-settings-submodules-to-run settings)
-                (module-language-settings-enforce-module-constants settings))))
+                (module-language-settings-enforce-module-constants settings)
+                (module-language-settings-run-in-separate-process settings))))
       
       (define/override (unmarshall-settings marshalled)
         (and (list? marshalled)
