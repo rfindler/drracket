@@ -1,5 +1,6 @@
 #lang racket/base
 (require "run-module-language-program.rkt"
+         racket/serialize
          racket/match
          racket/gui/base
          racket/pretty)
@@ -21,7 +22,7 @@ for bugs in this code to hopefully have some useful debugging information.
 (define original-error-port (current-error-port))
 
 (define (send-msg msg)
-  (writeln msg original-output-port)
+  (writeln (serialize msg) original-output-port)
   (flush-output original-output-port))
 
 (file-stream-buffer-mode original-error-port 'none) ;; stderr isn't supposed to be used; it'll show error messages from bugs, tho

@@ -26,6 +26,7 @@ TODO
          string-constants
          setup/xref
          racket/gui/base
+         racket/serialize
          framework
          browser/external
          drracket/private/drsig
@@ -1392,34 +1393,30 @@ TODO
                  (copy-port stderr drracket:init:original-error-port)))
               (thread
                (λ ()
-                 (with-handlers ([exn:fail:read?
-                                  (λ (exn)
-                                    (copy-port stdout (current-error-port))
-                                    (raise exn))])
-                   (let loop ()
-                     (match (read stdout)
-                       [(? eof-object?) (void)]
-                       [`("stdout" ,btes)
-                        (write-bytes btes (get-out-port))
-                        (loop)]
-                       [`("stderr" ,btes)
-                        (write-bytes btes (get-err-port))
-                        (loop)]
-                       [`("value" ,btes)
-                        (write-bytes btes (get-value-port))
-                        (loop)]
-                       [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
-                        (define (to-srcloc x) (apply srcloc (cdr (vector->list x))))
-                        (queue-callback
-                         (λ ()
-                           (drracket:debug:print-bug-to-stderr
-                            msg
-                            (srclocs->viewable-stack (map to-srcloc srclocs1) '() #;(list definitions-text this))
-                            (srclocs->viewable-stack (map to-srcloc srclocs2) '() #;(list definitions-text this)))))
-                        (loop)]
-                       [`("finished-evaluation")
-                        (channel-put finished-evaluation-chan (void))
-                        (loop)])))))
+                 (let loop ()
+                   (define msg (deserialize (read stdout)))
+                   (match msg
+                     [(? eof-object?) (void)]
+                     [`("stdout" ,btes)
+                      (write-bytes btes (get-out-port))
+                      (loop)]
+                     [`("stderr" ,btes)
+                      (write-bytes btes (get-err-port))
+                      (loop)]
+                     [`("value" ,btes)
+                      (write-bytes btes (get-value-port))
+                      (loop)]
+                     [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
+                      (define (to-srcloc x) (apply srcloc (cdr (vector->list x))))
+                      (parameterize ([current-error-port (get-err-port)])
+                        (drracket:debug:print-bug-to-stderr
+                         msg
+                         (srclocs->viewable-stack (map to-srcloc srclocs1) '() #;(list definitions-text this))
+                         (srclocs->viewable-stack (map to-srcloc srclocs2) '() #;(list definitions-text this))))
+                      (loop)]
+                     [`("finished-evaluation")
+                      (channel-put finished-evaluation-chan (void))
+                      (loop)]))))
               (set! user-subprocess+ports (list separate-process stdin finished-evaluation-chan))))
           
           (let* ([init-thread-complete (make-semaphore 0)]
