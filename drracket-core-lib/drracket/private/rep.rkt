@@ -1408,6 +1408,15 @@ TODO
                        [`("value" ,btes)
                         (write-bytes btes (get-value-port))
                         (loop)]
+                       [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
+                        (define (to-srcloc x) (apply srcloc (cdr (vector->list x))))
+                        (queue-callback
+                         (λ ()
+                           (drracket:debug:print-bug-to-stderr
+                            msg
+                            (srclocs->viewable-stack (map to-srcloc srclocs1) '() #;(list definitions-text this))
+                            (srclocs->viewable-stack (map to-srcloc srclocs2) '() #;(list definitions-text this)))))
+                        (loop)]
                        [`("finished-evaluation")
                         (channel-put finished-evaluation-chan (void))
                         (loop)])))))

@@ -370,9 +370,7 @@
     (print-planet-icon-to-stderr exn)
     (unless (exn:fail:user? exn)
       (unless (exn:fail:syntax? exn)
-        (unless (and (empty-viewable-stack? stack1) (empty-viewable-stack? stack2))
-          (unless (zero? (error-print-context-length))
-            (print-bug-to-stderr msg stack1 stack2)))))
+        (print-bug-to-stderr msg stack1 stack2)))
     (when (or (not (exn:fail:user? exn))
               (exn:srclocs? exn))
       (display-srclocs-in-error src-locs stack1))
@@ -538,11 +536,13 @@
   
   ;; =User=
   (define (print-bug-to-stderr msg viewable-stack1 viewable-stack2)
-    (when (port-writes-special? (current-error-port))
-      (define note (make-note-to-print-to-stderr msg viewable-stack1 viewable-stack2))
-      (when note
-        (write-special note (current-error-port))
-        (display #\space (current-error-port)))))
+    (unless (and (empty-viewable-stack? viewable-stack1) (empty-viewable-stack? viewable-stack2))
+      (unless (zero? (error-print-context-length))
+        (when (port-writes-special? (current-error-port))
+          (define note (make-note-to-print-to-stderr msg viewable-stack1 viewable-stack2))
+          (when note
+            (write-special note (current-error-port))
+            (display #\space (current-error-port)))))))
 
   ;; =Kernel= =User=
   (define (make-note-to-print-to-stderr msg viewable-stack1 viewable-stack2)

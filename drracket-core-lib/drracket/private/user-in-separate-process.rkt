@@ -20,6 +20,10 @@ for bugs in this code to hopefully have some useful debugging information.
 (define original-output-port (current-output-port))
 (define original-error-port (current-error-port))
 
+(define (send-msg msg)
+  (writeln msg original-output-port)
+  (flush-output original-output-port))
+
 (file-stream-buffer-mode original-error-port 'none) ;; stderr isn't supposed to be used; it'll show error messages from bugs, tho
 
 (define oprintf
@@ -35,6 +39,17 @@ for bugs in this code to hopefully have some useful debugging information.
      (close-output-port current-value-pipe-out)
      (custodian-shutdown-all user-custodian)
      (o-e-h x))))
+
+(define debug-error-display-handler
+  (let ([original-error-display-hander (error-display-handler)])
+    (λ (str exn)
+      (when (exn? exn)
+        (define srclocs1
+          (map struct->vector (filter values (map cdr (continuation-mark-set->context (exn-continuation-marks exn))))))
+        (define srclocs2
+          '())
+        (send-msg `("print-bug-to-stderr" ,(exn-message exn) ,srclocs1 ,srclocs2)))
+      (original-error-display-hander str exn))))
 
 (define-values (current-output-pipe-in current-output-pipe-out) (make-pipe))
 (define-values (current-error-pipe-in current-error-pipe-out) (make-pipe))
@@ -55,12 +70,10 @@ for bugs in this code to hopefully have some useful debugging information.
            ;; ignore specials
            (loop)]
           [else
-           (writeln
+           (send-msg
             `(,name ,(if (= res (bytes-length bts))
                          bts
-                         (subbytes bts 0 res)))
-            original-output-port)
-           (flush-output original-output-port)
+                         (subbytes bts 0 res))))
            (loop)]))))))
 
 (forward-output-back current-output-pipe-in "stdout")
@@ -110,6 +123,7 @@ for bugs in this code to hopefully have some useful debugging information.
 (parameterize ([current-eventspace user-eventspace])
   (queue-callback
    (λ ()
+     (error-display-handler debug-error-display-handler)
      (current-print drracket-current-print)
      (current-output-port current-output-pipe-out)
      (current-error-port current-error-pipe-out))))
@@ -166,8 +180,7 @@ for bugs in this code to hopefully have some useful debugging information.
 
           (flush-output current-output-pipe-out)
           (flush-output current-error-pipe-out)
-          (writeln `("finished-evaluation") original-output-port)
-          (flush-output original-output-port))))
+          (send-msg `("finished-evaluation")))))
      (loop)]
     [(list "interaction" pretty-print-width the-bytes)
      (parameterize ([current-eventspace user-eventspace])
@@ -182,8 +195,7 @@ for bugs in this code to hopefully have some useful debugging information.
                               get-sexp/syntax/eof)
           (flush-output current-output-pipe-out)
           (flush-output current-error-pipe-out)
-          (writeln `("finished-evaluation") original-output-port)
-          (flush-output original-output-port))))
+          (send-msg `("finished-evaluation")))))
      (loop)]
     [(? eof-object?)
      (exit 0)]))
