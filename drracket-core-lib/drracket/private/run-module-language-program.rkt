@@ -1,7 +1,7 @@
 #lang racket/base
 (require (submod "stack-checkpoint.rkt" with-stack-checkpoint)
          "eval-helpers-and-pref-init.rkt"
-         "insulated-read-language.rkt"
+         "insulated-read-language.rkt" ;; -- need to get rid of this dependency; it pulls in a LOT
          racket/gui/base
          racket/pretty)
 

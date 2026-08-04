@@ -141,7 +141,7 @@
   ;; auto-text : #f -- this is now ignored
   (define-struct (module-language-settings lmn:drracket:language:simple-settings)
     (collection-paths command-line-args auto-text compilation-on? full-trace? submodules-to-run
-                      enforce-module-constants))
+                      enforce-module-constants run-in-separate-process))
   
   (define (module-language-settings->prefab-module-settings settings #:irl the-irl)
     (prefab-module-settings (module-language-settings-command-line-args settings)
@@ -161,6 +161,7 @@
   (define default-full-trace? #t)
   (define default-submodules-to-run (list '(test) '(main)))
   (define default-enforce-module-constants #t)
+  (define default-run-in-separate-process #f)
 
   (define (disable-debugging-et-al language-settings)
     (define lang
@@ -279,7 +280,8 @@
            default-compilation-on?
            default-full-trace?
            default-submodules-to-run
-           default-enforce-module-constants)))
+           default-enforce-module-constants
+           default-run-in-separate-process)))
       
       ;; default-settings? : -> boolean
       (define/override (default-settings? settings)
@@ -308,7 +310,10 @@
              (equal? (module-language-settings-submodules-to-run settings)
                      default-submodules-to-run)
              (equal? (module-language-settings-enforce-module-constants settings)
-                     default-enforce-module-constants)))
+                     default-enforce-module-constants)
+             (equal? (module-language-settings-run-in-separate-process settings)
+                     default-run-in-separate-process)
+             ))
       
       (define/override (marshall-settings settings)
         (let ([super-marshalled (super marshall-settings settings)])
@@ -342,7 +347,10 @@
                                                  (list-ref marshalled 6))]
                           [enforce-module-constants (if (<= marshalled-len 7)
                                                         default-enforce-module-constants
-                                                        (list-ref marshalled 7))])
+                                                        (list-ref marshalled 7))]
+                          [run-in-separate-process (if (<= marshalled-len 8)
+                                                       default-run-in-separate-process
+                                                       (list-ref marshalled 8))])
                       (and (list? collection-paths)
                            (andmap (λ (x) (or (string? x) (symbol? x)))
                                    collection-paths)
@@ -381,7 +389,8 @@
                                           
                                           full-trace?
                                           submodules-to-run
-                                          enforce-module-constants)))))))))))
+                                          enforce-module-constants
+                                          run-in-separate-process)))))))))))
 
       ;; drracket will always supply `the-irl`, when running the program,
       ;; but some tools might call this, and they might not supply it
@@ -594,6 +603,7 @@
            [stretchable-width #f]))
     (define compilation-on-check-box #f)
     (define enforce-module-constants-checkbox #f)
+    (define run-in-separate-process-checkbox #f)
     (define compilation-on? #t)
     (define save-stacktrace-on-check-box #f)
     (define run-submodules-choice #f)
@@ -618,6 +628,7 @@
     (define automatically-compile-kestroke #\a)
     (define stacktrace-keystroke #\s)
     (define enforce-module-constants-keystroke #\k)
+    (define run-in-separate-process-keystroke #\e)
 
     (define (compilation-on-checkbox-callback)
       (set! compilation-on? (send compilation-on-check-box get-value))
@@ -662,6 +673,12 @@
                     [label (drracket:language:add-menu-shortcut
                             (string-constant enforce-module-constants-checkbox-label)
                             (and keyboard-shortcuts? enforce-module-constants-keystroke))]
+                    [parent dynamic-panel]))
+         (set! run-in-separate-process-checkbox
+               (new check-box%
+                    [label (drracket:language:add-menu-shortcut
+                            (string-constant run-in-separate-process-checkbox-label)
+                            (and keyboard-shortcuts? run-in-separate-process-keystroke))]
                     [parent dynamic-panel]))
          (set! run-submodules-choice 
                (new (class name-message%
@@ -858,7 +875,10 @@
                      (send save-stacktrace-on-check-box set-value (not (send save-stacktrace-on-check-box get-value)))))
              (list enforce-module-constants-keystroke
                    (λ ()
-                     (send enforce-module-constants-checkbox set-value (not (send enforce-module-constants-checkbox get-value))))))))
+                     (send enforce-module-constants-checkbox set-value (not (send enforce-module-constants-checkbox get-value)))))
+             (list run-in-separate-process-keystroke
+                   (λ ()
+                     (send run-in-separate-process-checkbox set-value (not (send run-in-separate-process-checkbox get-value))))))))
 
     (drracket:language-configuration:config-panel-with-keystrokes
      (case-lambda
@@ -878,7 +898,8 @@
                              [else #f])])
                         (send save-stacktrace-on-check-box get-value)
                         submodules-to-run
-                        (send enforce-module-constants-checkbox get-value)))))]
+                        (send enforce-module-constants-checkbox get-value)
+                        (send run-in-separate-process-checkbox get-value)))))]
        [(settings)
         (simple-case-lambda settings)
         (install-collection-paths (module-language-settings-collection-paths settings))
@@ -890,6 +911,8 @@
         (set-submodules-to-run (module-language-settings-submodules-to-run settings))
         (send enforce-module-constants-checkbox set-value
               (module-language-settings-enforce-module-constants settings))
+        (send run-in-separate-process-checkbox set-value
+              (module-language-settings-run-in-separate-process settings))
         (update-buttons)])
      (if keyboard-shortcuts? shortcuts '())))
 

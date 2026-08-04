@@ -87,8 +87,6 @@
   (and (string? s)
        (regexp-match? #rx"\n$" s)))
 
-(preferences:set-default 'drracket:run-in-separate-process #f boolean?)
-
 (preferences:set-default 'drracket:restore-previously-opened-files 'ask (or/c 'ask boolean?))
 
 (preferences:set-default 'drracket:most-recent-lang-line "#lang racket\n"

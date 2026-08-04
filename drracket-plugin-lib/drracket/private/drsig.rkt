@@ -131,7 +131,8 @@
    disable-debugging-et-al
    get-preferred-lang-line
    get-filename-from-definitions
-   module-language-settings-submodules-to-run))
+   module-language-settings-submodules-to-run
+   module-language-settings-run-in-separate-process))
 
 (define-signature drracket:module-language-tools-cm^
   (frame-mixin

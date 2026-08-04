@@ -1276,6 +1276,7 @@ TODO
           (when user-custodian
             (custodian-shutdown-all user-custodian))
           (set! user-custodian #f)
+          (set! user-subprocess+ports #f)
           (set! user-eventspace-main-thread #f)))
       
       (define/public (kill-evaluation) ; =Kernel=, =Handler=
@@ -1284,7 +1285,8 @@ TODO
         (clear-input-port)
         (clear-box-input-port)
         (clear-output-ports)
-        (set! user-custodian #f))
+        (set! user-custodian #f)
+        (set! user-subprocess+ports #f))
       
       (field (eval-thread-thunks null)
              (eval-thread-state-sema 'not-yet-state-sema)
@@ -1374,8 +1376,8 @@ TODO
                   (oe sexp/syntax)]))
              drracket-eval-handler))
 
-          (when (and (preferences:get 'drracket:run-in-separate-process)
-                     (is-a? lang drracket:module-language:module-language<%>))
+          (when (and (is-a? lang drracket:module-language:module-language<%>)
+                     (drracket:module-language:module-language-settings-run-in-separate-process settings))
             (parameterize ([current-custodian user-custodian])
               (define-values (separate-process stdout stdin stderr)
                 (subprocess #f #f #f 'new drracket:init:system-exec-file-path #"-l" #"drracket/private/user-in-separate-process.rkt"))
