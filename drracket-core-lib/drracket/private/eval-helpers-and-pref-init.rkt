@@ -2,7 +2,6 @@
 (require racket/class
          racket/draw
          racket/list
-         racket/unit
          racket/set
          compiler/cm
          setup/dirs

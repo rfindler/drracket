@@ -444,6 +444,13 @@
          drracket:init:system-eventspace
          raise-hopeless-exception raise-hopeless-syntax-error
          repl-init-thunk
+         (let ([call-set-irl-mcli-vec
+                (λ (info)
+                  (when the-irl
+                    (parameterize ([current-eventspace drracket:init:system-eventspace])
+                      (queue-callback
+                       (λ () (set-irl-mcli-vec! the-irl info))))))])
+           call-set-irl-mcli-vec)
          port the-irl))
       
       (define/override (front-end/finished-complete-program settings)

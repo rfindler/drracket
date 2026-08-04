@@ -1,7 +1,7 @@
 #lang racket/base
 (require (submod "stack-checkpoint.rkt" with-stack-checkpoint)
          "eval-helpers-and-pref-init.rkt"
-         "insulated-read-language.rkt" ;; -- need to get rid of this dependency; it pulls in a LOT
+         (submod "insulated-read-language.rkt" mcli)
          racket/gui/base
          racket/pretty)
 
@@ -82,7 +82,7 @@ a program. It also gets used when drracket runs a program in a separate process.
 
 (define (front-end/complete-program get-reader path get-pre-compiled submodules-to-run
                                     drracket:init:system-eventspace
-                                    raise-hopeless-exception raise-hopeless-syntax-error repl-init-thunk
+                                    raise-hopeless-exception raise-hopeless-syntax-error repl-init-thunk call-set-irl-mcli-vec
                                     port [the-irl #f])
   (define (super-thunk)
     (define reader (get-reader))
@@ -178,10 +178,7 @@ a program. It also gets used when drracket runs a program in a separate process.
   (define (*do-module-specified-configuration)
     (define info (module->language-info modspec #t))
     (unless (mcli? info) (set! info #f))
-    (when the-irl
-      (parameterize ([current-eventspace drracket:init:system-eventspace])
-        (queue-callback
-         (λ () (set-irl-mcli-vec! the-irl info)))))
+    (call-set-irl-mcli-vec info)
     (when info
       (let ([get-info
              ((dynamic-require (vector-ref info 0)

@@ -139,6 +139,11 @@ for bugs in this code to hopefully have some useful debugging information.
                                         'drracket:init:system-eventspace ;; ignored when the-irl is #f
                                         raise-hopeless-exception raise-hopeless-syntax-error
                                         repl-init-thunk
+
+                                        void ;; call-set-irl-mcli-vec
+                                        ;; we don't need to set-irl-mcli-vec! because we'll get the
+                                        ;; drracket:submit-predicate via read-language, I believe
+
                                         (open-input-bytes the-bytes path)
                                         #f ;; the-irl
                                         ))
