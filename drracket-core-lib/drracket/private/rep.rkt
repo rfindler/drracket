@@ -1405,6 +1405,9 @@ TODO
                        [`("stderr" ,btes)
                         (write-bytes btes (get-err-port))
                         (loop)]
+                       [`("value" ,btes)
+                        (write-bytes btes (get-value-port))
+                        (loop)]
                        [`("finished-evaluation")
                         (channel-put finished-evaluation-chan (void))
                         (loop)])))))

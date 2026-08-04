@@ -1,7 +1,21 @@
 #lang racket/base
 (require "run-module-language-program.rkt"
          racket/match
-         racket/gui/base)
+         racket/gui/base
+         racket/pretty)
+
+#|
+
+This file runs in a separate process created by DrRacket to run
+Racket programs (when the `run-in-separate-process` option in the
+language dialog is set).
+
+It uses stdin and stdout to communicate with DrRacket, leaving stderr
+for bugs in this code to hopefully have some useful debugging information.
+
+|#
+
+
 
 (define original-output-port (current-output-port))
 (define original-error-port (current-error-port))
@@ -18,20 +32,13 @@
    (λ (x)
      (close-output-port current-output-pipe-out)
      (close-output-port current-error-pipe-out)
+     (close-output-port current-value-pipe-out)
+     (custodian-shutdown-all user-custodian)
      (o-e-h x))))
-
-#|
-
-This file runs a loop in a separate process created by DrRacket to run
-Racket programs (when the 'drracket:run-in-separate-process pref is set).
-
-It uses stdin and stdout to communicate with DrRacket, leaving stderr
-for bugs in this code to hopefully have some useful debugging information
-
-|#
 
 (define-values (current-output-pipe-in current-output-pipe-out) (make-pipe))
 (define-values (current-error-pipe-in current-error-pipe-out) (make-pipe))
+(define-values (current-value-pipe-in current-value-pipe-out) (make-pipe))
 
 (define (forward-output-back from-port name)
   (define bts (make-bytes 256))
@@ -58,6 +65,7 @@ for bugs in this code to hopefully have some useful debugging information
 
 (forward-output-back current-output-pipe-in "stdout")
 (forward-output-back current-error-pipe-in "stderr")
+(forward-output-back current-value-pipe-in "value")
 
 (define user-break-parameterization
   (parameterize-break 
@@ -87,10 +95,22 @@ for bugs in this code to hopefully have some useful debugging information
 (define user-custodian (make-custodian))
 (define user-eventspace (parameterize ([current-custodian user-custodian])
                           (make-eventspace)))
+(define drracket-determined-width (make-parameter 'infinity))
+
+(define (drracket-current-print val)
+  (unless (void? val)
+    (define port
+      (if (equal? (current-output-port) current-output-pipe-out)
+          current-value-pipe-out
+          (current-output-port)))
+    (parameterize ([pretty-print-columns (drracket-determined-width)])
+      (print val port))
+    (newline port)))
 
 (parameterize ([current-eventspace user-eventspace])
   (queue-callback
    (λ ()
+     (current-print drracket-current-print)
      (current-output-port current-output-pipe-out)
      (current-error-port current-error-pipe-out))))
 
@@ -100,6 +120,7 @@ for bugs in this code to hopefully have some useful debugging information
      (parameterize ([current-eventspace user-eventspace])
        (queue-callback
         (λ ()
+          (drracket-determined-width pretty-print-width)
           (define path (bytes->path path-as-bytes))
           (define (get-reader)
             (λ (src port)
@@ -147,6 +168,7 @@ for bugs in this code to hopefully have some useful debugging information
      (parameterize ([current-eventspace user-eventspace])
        (queue-callback
         (λ ()
+          (drracket-determined-width pretty-print-width)
           (define get-sexp/syntax/eof
             (front-end/interaction (open-input-bytes the-bytes #f)))
           (run-some-user-code user-break-parameterization
