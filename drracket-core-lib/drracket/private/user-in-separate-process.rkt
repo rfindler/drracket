@@ -1,14 +1,24 @@
 #lang racket/base
 (require "run-module-language-program.rkt"
-         racket/match)
+         racket/match
+         racket/gui/base)
 
 (define original-output-port (current-output-port))
 (define original-error-port (current-error-port))
+
+(file-stream-buffer-mode original-error-port 'none) ;; stderr isn't supposed to be used; it'll show error messages from bugs, tho
 
 (define oprintf
   (λ args
     (apply fprintf original-error-port args)
     (flush-output original-error-port)))
+
+(let ([o-e-h (exit-handler)])
+  (exit-handler
+   (λ (x)
+     (close-output-port current-output-pipe-out)
+     (close-output-port current-error-pipe-out)
+     (o-e-h x))))
 
 #|
 
@@ -49,9 +59,6 @@ for bugs in this code to hopefully have some useful debugging information
 (forward-output-back current-output-pipe-in "stdout")
 (forward-output-back current-error-pipe-in "stderr")
 
-(current-output-port current-output-pipe-out)
-(current-error-port current-error-pipe-out)
-
 (define user-break-parameterization
   (parameterize-break 
    #t 
@@ -77,51 +84,79 @@ for bugs in this code to hopefully have some useful debugging information
     (apply raise-syntax-error '|Module Language|
            error-args)))
 
+(define user-custodian (make-custodian))
+(define user-eventspace (parameterize ([current-custodian user-custodian])
+                          (make-eventspace)))
+
+(parameterize ([current-eventspace user-eventspace])
+  (queue-callback
+   (λ ()
+     (current-output-port current-output-pipe-out)
+     (current-error-port current-error-pipe-out))))
+
 (let loop ()
   (match (read (current-input-port))
     [(list "complete-program" pretty-print-width submodules-to-run path-as-bytes the-bytes)
-     (define path (bytes->path path-as-bytes))
-     (define (get-reader)
-       (λ (src port)
-         (define v
-           (parameterize ([read-accept-reader #t])
-             (read-syntax src port)))
-         (if (eof-object? v)
-             v
-             (namespace-syntax-introduce v))))
-     (define repl-init-thunk (make-thread-cell #f))
-     (define get-sexp/syntax/eof
-       (front-end/complete-program get-reader
-                                   path
-                                   (λ () #f) ;; get-pre-compiled
-                                   submodules-to-run
-                                   'drracket:init:system-eventspace ;; ignored when the-irl is #f
-                                   raise-hopeless-exception raise-hopeless-syntax-error
-                                   repl-init-thunk
-                                   (open-input-bytes the-bytes path)
-                                   #f ;; the-irl
-                                   ))
-     (run-some-user-code user-break-parameterization
-                         outermost
-                         pretty-print-width
-                         get-sexp/syntax/eof)
+     (parameterize ([current-eventspace user-eventspace])
+       (queue-callback
+        (λ ()
+          (define path (bytes->path path-as-bytes))
+          (define (get-reader)
+            (λ (src port)
+              (define v
+                (parameterize ([read-accept-reader #t])
+                  (read-syntax src port)))
+              (if (eof-object? v)
+                  v
+                  (namespace-syntax-introduce v))))
+          (define repl-init-thunk (make-thread-cell #f))
+          (define get-sexp/syntax/eof
+            (front-end/complete-program get-reader
+                                        path
+                                        (λ () #f) ;; get-pre-compiled
+                                        submodules-to-run
+                                        'drracket:init:system-eventspace ;; ignored when the-irl is #f
+                                        raise-hopeless-exception raise-hopeless-syntax-error
+                                        repl-init-thunk
+                                        (open-input-bytes the-bytes path)
+                                        #f ;; the-irl
+                                        ))
+          (run-some-user-code user-break-parameterization
+                              outermost
+                              pretty-print-width
+                              get-sexp/syntax/eof)
 
-     ;; this prompt is the same as in rep.rkt in evaluate-from-port
-     (call-with-continuation-prompt
-      (λ ()
-        (call-with-break-parameterization
-         user-break-parameterization
-         (λ ()
-           ;; this is the module language's front-end/finished-complete-program
-           (cond [(thread-cell-ref repl-init-thunk)
-                  => (λ (t) (thread-cell-set! repl-init-thunk #f) (t))]))))
-      (default-continuation-prompt-tag)
-      (λ args (void)))
-          
-     (flush-output current-output-pipe-out)
-     (flush-output current-error-pipe-out)
-     (writeln `("finished-evaluation") original-output-port)
-     (flush-output original-output-port)
+          ;; this prompt is the same as in rep.rkt in evaluate-from-port
+          (call-with-continuation-prompt
+           (λ ()
+             (call-with-break-parameterization
+              user-break-parameterization
+              (λ ()
+                ;; this is the module language's front-end/finished-complete-program
+                (cond [(thread-cell-ref repl-init-thunk)
+                       => (λ (t) (thread-cell-set! repl-init-thunk #f) (t))]))))
+           (default-continuation-prompt-tag)
+           (λ args (void)))
+
+          (flush-output current-output-pipe-out)
+          (flush-output current-error-pipe-out)
+          (writeln `("finished-evaluation") original-output-port)
+          (flush-output original-output-port))))
+     (loop)]
+    [(list "interaction" pretty-print-width the-bytes)
+     (parameterize ([current-eventspace user-eventspace])
+       (queue-callback
+        (λ ()
+          (define get-sexp/syntax/eof
+            (front-end/interaction (open-input-bytes the-bytes #f)))
+          (run-some-user-code user-break-parameterization
+                              outermost
+                              pretty-print-width
+                              get-sexp/syntax/eof)
+          (flush-output current-output-pipe-out)
+          (flush-output current-error-pipe-out)
+          (writeln `("finished-evaluation") original-output-port)
+          (flush-output original-output-port))))
      (loop)]
     [(? eof-object?)
      (exit 0)]))

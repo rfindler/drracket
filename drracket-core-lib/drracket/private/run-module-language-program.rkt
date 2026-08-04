@@ -13,7 +13,8 @@ a program. It also gets used when drracket runs a program in a separate process.
 |#
 
 (provide run-some-user-code
-         front-end/complete-program)
+         front-end/complete-program
+         front-end/interaction)
 
 ;; this is expected to be called on the user's thread to run the code in
 ;; the definitions window or in the interactions window; it is called from
@@ -196,6 +197,22 @@ a program. It also gets used when drracket runs a program in a separate process.
       (dynamic-require cr-submod #f)))
   ;; here's where they're all combined with the module expression
   (expr-getter *pre module-expr *post))
+
+(define (front-end/interaction port)
+  (λ ()
+    (let ([v (parameterize ([read-accept-reader #t]
+                            [read-accept-lang #f])
+               (with-stack-checkpoint
+                   ((current-read-interaction) 
+                    (object-name port)
+                    port)))])
+      (if (eof-object? v)
+          v
+          (let ([w (cons '#%top-interaction v)])
+            (if (syntax? v)
+                (namespace-syntax-introduce
+                 (datum->syntax #f w v))
+                v))))))
 
 ;; utility for the front-end method: return a function that will return
 ;; each of the given syntax values on each call, executing thunks when

@@ -441,20 +441,7 @@
                => (λ (t) (thread-cell-set! repl-init-thunk #f) (t))]))
       
       (define/override (front-end/interaction port settings)
-        (λ ()
-          (let ([v (parameterize ([read-accept-reader #t]
-                                  [read-accept-lang #f])
-                     (with-stack-checkpoint
-                      ((current-read-interaction) 
-                       (object-name port)
-                       port)))])
-            (if (eof-object? v)
-                v
-                (let ([w (cons '#%top-interaction v)])
-                  (if (syntax? v)
-                      (namespace-syntax-introduce
-                       (datum->syntax #f w v))
-                      v))))))
+        (rmlp:front-end/interaction port))
 
       (define/override (render-value/format value settings port width)
         (do-print value settings port width))

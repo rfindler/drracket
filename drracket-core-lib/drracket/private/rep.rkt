@@ -1379,6 +1379,7 @@ TODO
             (parameterize ([current-custodian user-custodian])
               (define-values (separate-process stdout stdin stderr)
                 (subprocess #f #f #f 'new drracket:init:system-exec-file-path #"-l" #"drracket/private/user-in-separate-process.rkt"))
+              (file-stream-buffer-mode stderr 'none) ;; stderr isn't supposed to be used; it'll show error messages from bugs, tho
               (define finished-evaluation-chan (make-channel))
               (thread
                (λ ()
@@ -1389,18 +1390,22 @@ TODO
                  (copy-port stderr drracket:init:original-error-port)))
               (thread
                (λ ()
-                 (let loop ()
-                   (match (read stdout)
-                     [(? eof-object?) (void)]
-                     [`("stdout" ,btes)
-                      (write-bytes btes (get-out-port))
-                      (loop)]
-                     [`("stderr" ,btes)
-                      (write-bytes btes (get-err-port))
-                      (loop)]
-                     [`("finished-evaluation")
-                      (channel-put finished-evaluation-chan (void))
-                      (loop)]))))
+                 (with-handlers ([exn:fail:read?
+                                  (λ (exn)
+                                    (copy-port stdout (current-error-port))
+                                    (raise exn))])
+                   (let loop ()
+                     (match (read stdout)
+                       [(? eof-object?) (void)]
+                       [`("stdout" ,btes)
+                        (write-bytes btes (get-out-port))
+                        (loop)]
+                       [`("stderr" ,btes)
+                        (write-bytes btes (get-err-port))
+                        (loop)]
+                       [`("finished-evaluation")
+                        (channel-put finished-evaluation-chan (void))
+                        (loop)])))))
               (set! user-subprocess+ports (list separate-process stdin finished-evaluation-chan))))
           
           (let* ([init-thread-complete (make-semaphore 0)]
