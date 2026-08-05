@@ -46,7 +46,7 @@ for bugs in this code to hopefully have some useful debugging information.
     (λ (str exn)
       (when (exn? exn)
         (define srclocs1
-          (map struct->vector (filter values (map cdr (continuation-mark-set->context (exn-continuation-marks exn))))))
+          (filter values (map cdr (continuation-mark-set->context (exn-continuation-marks exn)))))
         (define srclocs2
           '())
         (send-msg `("print-bug-to-stderr" ,(exn-message exn) ,srclocs1 ,srclocs2)))

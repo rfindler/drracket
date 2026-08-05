@@ -1407,12 +1407,11 @@ TODO
                       (write-bytes btes (get-value-port))
                       (loop)]
                      [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
-                      (define (to-srcloc x) (apply srcloc (cdr (vector->list x))))
                       (parameterize ([current-error-port (get-err-port)])
                         (drracket:debug:print-bug-to-stderr
                          msg
-                         (srclocs->viewable-stack (map to-srcloc srclocs1) '() #;(list definitions-text this))
-                         (srclocs->viewable-stack (map to-srcloc srclocs2) '() #;(list definitions-text this))))
+                         (srclocs->viewable-stack srclocs1 '() #;(list definitions-text this))
+                         (srclocs->viewable-stack srclocs2 '() #;(list definitions-text this))))
                       (loop)]
                      [`("finished-evaluation")
                       (channel-put finished-evaluation-chan (void))
