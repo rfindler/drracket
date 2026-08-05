@@ -1474,7 +1474,6 @@ TODO
             ;; initialize the language
             (let ()
               (define (run-on-user-thread t)
-                (oprintf "r-o-u-t ~s\n" t)
                 (queue-user/wait
                  (λ ()
                    (with-handlers ((exn? (λ (x) (oprintf "~s\n" (exn-message x)))))

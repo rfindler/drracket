@@ -136,6 +136,109 @@ for bugs in this code to hopefully have some useful debugging information.
        (queue-callback
         (λ ()
           (drracket-determined-width pretty-print-width)
+
+          ;; the following code is not yet working, but it is copies
+          ;; of the code that the module language uses to initialize
+          ;; the REPL in the user's program; it is here so we know what it all is.
+          #;
+          (begin
+            (cond
+              [the-irl
+               (parameterize ([drracket:language:lang-default-annotations
+                               (call-read-language the-irl
+                                                   'drracket:default-instrumentation
+                                                   'debug)])
+                 (super on-execute settings run-in-user-thread))]
+              [else (super on-execute settings run-in-user-thread)])
+            ;; these are the steps that the language.rkt does in `on-execute`
+            (define annotations
+              (cond
+                [(equal? (simple-settings-annotations setting) 'lang-default)
+                 (lang-default-annotations)]
+                [else (simple-settings-annotations setting)]))
+            (run-in-user-thread
+             (λ ()
+               (case annotations
+                 [(debug)
+                  ;; errortrace-annotate probably comes from this:
+                  #;(define-values/invoke-unit/infer stacktrace/errortrace-annotate/key-module-name@)
+                  (current-compile (make-debug-compile-handler/errortrace-annotate (current-compile) errortrace-annotate))
+                  (error-display-handler
+                   (drracket:debug:make-debug-error-display-handler
+                    (error-display-handler)))]
+           
+                 [(debug/profile)
+                  (drracket:debug:profiling-enabled #t)
+                  (error-display-handler
+                   (drracket:debug:make-debug-error-display-handler
+                    (error-display-handler)))
+                  (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))]
+           
+                 [(test-coverage)
+                  (drracket:debug:test-coverage-enabled #t)
+                  (error-display-handler
+                   (drracket:debug:make-debug-error-display-handler
+                    (error-display-handler)))
+                  (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))])
+       
+               (define-values (my-setup-printing-parameters
+                               drracket-pretty-print-size-hook
+                               drracket-pretty-print-print-hook)
+                 (make-setup-printing-parameters/extras))
+
+               (pretty-print-print-hook drracket-pretty-print-print-hook)
+               (pretty-print-size-hook drracket-pretty-print-size-hook)
+               (define first-time? (make-parameter #t))
+               (global-port-print-handler
+                (λ (value port [depth 0])
+                  (define-values (converted-value write?)
+                    (call-with-values (lambda () (simple-module-based-language-convert-value value setting))
+                                      (case-lambda
+                                        [(converted-value) (values converted-value #t)]
+                                        [(converted-value write?) (values converted-value write?)])))
+                  (define cols
+                    (cond
+                      [(not (simple-settings-insert-newlines setting)) 'infinity]
+                      [(exact-integer? (print-value-columns)) (print-value-columns)]
+                      [else (drracket:module-language:drracket-determined-width)]))
+          
+                  (my-setup-printing-parameters
+                   (λ ()
+                     (define (do-print)
+                       (if write?
+                           (pretty-write converted-value port)
+                           (pretty-print converted-value port depth)))
+                     (cond
+                       [(first-time?)
+                        (define orig-pretty-print-print-line (pretty-print-print-line))
+                        (define pppl
+                          (if (simple-settings-insert-newlines setting)
+                              ;; when drracket:module-language:drracket-determined-width
+                              ;; is set, we need to compensate for the newline
+                              ;; difference, so we do this to avoid that last newline
+                              (if (equal? (drracket:module-language:drracket-determined-width) 'infinity)
+                                  orig-pretty-print-print-line
+                                  (λ (new-line-number port len cols)
+                                    (when new-line-number
+                                      (orig-pretty-print-print-line new-line-number port len cols))))
+                              orig-pretty-print-print-line))
+                        (parameterize ([pretty-print-columns cols]
+                                       [pretty-print-print-line pppl]
+                                       [first-time? #f])
+                          (do-print))]
+                       [else (do-print)]))
+                   setting
+                   'infinity)))
+               (current-inspector (make-inspector)) ;; this is effectively done already b/c a new process got created
+               (read-case-sensitive (simple-settings-case-sensitive setting))))
+            
+            ;; module language steps
+            ;; need to get `currently-open-files` from the drracket process
+            (set-module-language-parameters 
+             (module-language-settings->prefab-module-settings settings #:irl the-irl)
+             #f ;; module-language-parallel-lock-client -- we don't support this
+             currently-open-files))
+          
           (define path (bytes->path path-as-bytes))
           (define (get-reader)
             (λ (src port)
@@ -162,6 +265,7 @@ for bugs in this code to hopefully have some useful debugging information.
                                         (open-input-bytes the-bytes path)
                                         #f ;; the-irl
                                         ))
+
           (run-some-user-code user-break-parameterization
                               outermost
                               pretty-print-width
