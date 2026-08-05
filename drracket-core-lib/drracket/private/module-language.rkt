@@ -687,6 +687,9 @@
                     [label (drracket:language:add-menu-shortcut
                             (string-constant run-in-separate-process-checkbox-label)
                             (and keyboard-shortcuts? run-in-separate-process-keystroke))]
+                    [callback
+                     (λ (_1 _2)
+                       (update-compilation-checkbox left-debugging-radio-box right-debugging-radio-box bottom-debugging-radio-box))]
                     [parent dynamic-panel]))
          (set! run-submodules-choice 
                (new (class name-message%
@@ -721,12 +724,13 @@
                        [label (string-constant submodules-to-run)])))))))
     (define (update-compilation-checkbox left-debugging-radio-box right-debugging-radio-box bottom-debugging-radio-box)
       (define compilation-on-allowed?
-        (match* ((send left-debugging-radio-box get-selection)
-                 (send bottom-debugging-radio-box get-selection))
-          [(0 _) #t]
-          [(1 _) #t]
-          [(_ 0) #t]
-          [(_ _) #f]))
+        (and (not (send run-in-separate-process-checkbox get-value))
+             (match* ((send left-debugging-radio-box get-selection)
+                      (send bottom-debugging-radio-box get-selection))
+               [(0 _) #t]
+               [(1 _) #t]
+               [(_ 0) #t]
+               [(_ _) #f])))
       (cond
         [compilation-on-allowed?
          (send compilation-on-check-box enable #t)
