@@ -133,7 +133,9 @@
    get-preferred-lang-line
    get-filename-from-definitions
    module-language-settings-submodules-to-run
-   module-language-settings-run-in-separate-process))
+   module-language-settings-run-in-separate-process
+   module-language-settings->prefab-module-settings
+   get-currently-open-files))
 
 (define-signature drracket:module-language-tools-cm^
   (frame-mixin

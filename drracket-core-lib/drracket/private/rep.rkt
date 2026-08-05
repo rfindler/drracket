@@ -1194,6 +1194,7 @@ TODO
              (send (send definitions-text get-tab) get-pre-compiled-transform-module-results)]
             [else #f]))
         (define the-irl (send definitions-text get-irl))
+        (define currently-open-files (drracket:module-language:get-currently-open-files))
         (run-in-evaluation-thread
          (λ () ; =User=, =Handler=, =No-Breaks=
            (define lang (drracket:language-configuration:language-settings-language (current-language-settings)))
@@ -1208,16 +1209,25 @@ TODO
               (copy-port port bp)
               (cond
                 [complete-program?
-                 (writeln `("complete-program"
-                            ,pretty-print-width
-                            ,(drracket:module-language:module-language-settings-submodules-to-run settings)
-                            ,(and path (path->bytes path))
-                            ,(get-output-bytes bp))
+                 (writeln (serialize
+                           `("complete-program"
+                             ,pretty-print-width
+                             ,(drracket:module-language:module-language-settings-submodules-to-run settings)
+                             ,(cond
+                                [(equal? (drracket:language:simple-settings-annotations settings) 'lang-default)
+                                 (call-read-language the-irl
+                                                     'drracket:default-instrumentation
+                                                     'debug)]
+                                [else (drracket:language:simple-settings-annotations settings)])
+                             ,(drracket:module-language:module-language-settings->prefab-module-settings settings #:irl the-irl)
+                             ,currently-open-files
+                             ,path
+                             ,(get-output-bytes bp)))
                           stdin)]
                 [else
-                 (writeln `("interaction"
-                            ,pretty-print-width
-                            ,(get-output-bytes bp))
+                 (writeln (serialize`("interaction"
+                                      ,pretty-print-width
+                                      ,(get-output-bytes bp)))
                           stdin)])
               (flush-output stdin)
               (channel-get finished-evaluation-chan)]
