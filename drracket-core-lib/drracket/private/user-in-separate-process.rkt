@@ -1,10 +1,16 @@
 #lang racket/base
 (require "run-module-language-program.rkt"
          "eval-helpers-and-pref-init.rkt"
+         racket/contract
          racket/serialize
          racket/match
          racket/gui/base
-         racket/pretty)
+         racket/class
+         racket/pretty
+         racket/port
+         framework/preferences
+         (prefix-in file: file/convertible)
+         (prefix-in number-snip: framework/private/number-snip-size))
 
 #|
 
@@ -22,9 +28,13 @@ for bugs in this code to hopefully have some useful debugging information.
 (define original-output-port (current-output-port))
 (define original-error-port (current-error-port))
 
+(define sending-sema (make-semaphore 1))
 (define (send-msg msg)
-  (writeln (serialize msg) original-output-port)
-  (flush-output original-output-port))
+  (define sm (serialize msg))
+  (semaphore-wait sending-sema)
+  (writeln sm original-output-port)
+  (flush-output original-output-port)
+  (semaphore-post sending-sema))
 
 (file-stream-buffer-mode original-error-port 'none) ;; stderr isn't supposed to be used; it'll show error messages from bugs, tho
 
@@ -53,9 +63,9 @@ for bugs in this code to hopefully have some useful debugging information.
         (send-msg `("print-bug-to-stderr" ,(exn-message exn) ,srclocs1 ,srclocs2)))
       (original-error-display-hander str exn))))
 
-(define-values (current-output-pipe-in current-output-pipe-out) (make-pipe))
-(define-values (current-error-pipe-in current-error-pipe-out) (make-pipe))
-(define-values (current-value-pipe-in current-value-pipe-out) (make-pipe))
+(define-values (current-output-pipe-in current-output-pipe-out) (make-pipe-with-specials))
+(define-values (current-error-pipe-in current-error-pipe-out) (make-pipe-with-specials))
+(define-values (current-value-pipe-in current-value-pipe-out) (make-pipe-with-specials))
 
 (define (forward-output-back from-port name)
   (define bts (make-bytes 256))
@@ -69,7 +79,8 @@ for bugs in this code to hopefully have some useful debugging information.
            ;;; stop forwarding data if the pipe is closed
            (void)]
           [(procedure? res)
-           ;; ignore specials
+           (define spec (res #f #f #f #f)) ;; pass #f in for the source location as I believe it is ignored anyway?
+           (send-msg `(,name ,spec))
            (loop)]
           [else
            (send-msg
@@ -82,9 +93,137 @@ for bugs in this code to hopefully have some useful debugging information.
 (forward-output-back current-error-pipe-in "stderr")
 (forward-output-back current-value-pipe-in "value")
 
+(define default-pretty-print-current-style-table (pretty-print-current-style-table))
+
+;; ths function is an edited version of the language.rkt's printing support; compared to that:
+;; - it doesn't support syntax objects (because they are not serializable)
+;; - it doesn't support arbitrary snips (as it isn't clear how to marshall them)
+;; - it doesn't support `to-snip-value?` / `value->snip` because nothing seems to use that API
+;; - it supports only "print" mode (because the #lang languages probably should support only that mode in general)
+;; - when in "print" mode, the fraction-style is apparently always 'mixed-fraction-e, so this code supports only that
+(define (make-setup-printing-parameters/extras show-sharing insert-newlines)
+  (define gave-up? #f)
+  (define-syntax-rule
+    (dyn name)
+    (define name (if gave-up?
+                     (string->symbol (format "~a-gave-up" 'name))
+                     (dynamic-require 'pict 'name))))
+  (define pict:convertible?
+    (with-handlers ((exn:fail? (λ (exn)
+                                 (set! gave-up? #t)
+                                 (log-error (exn-message exn))
+                                 (λ (val) #f))))
+      (dynamic-require 'pict/convert 'pict-convertible?)))
+  (define pict-convert (if gave-up?
+                           'pict-convert-gave-up
+                           (dynamic-require 'pict/convert 'pict-convert)))
+  (dyn pict-width)
+  (dyn pict-height)
+  (dyn pict-ascent)
+  (dyn pict-descent)
+  (dyn draw-pict)
+  (dyn convert-bounds-padding)
+  (define (mk-pict-snip-args convertible)
+    (define-values (l-pad t-pad r-pad b-pad) (apply values (convert-bounds-padding)))
+    (define pict (pict-convert convertible))
+    (define w (pict-width pict))
+    (define aw (+ (abs w) l-pad r-pad))
+    (define h (pict-height pict))
+    (define ah (+ (abs h) t-pad b-pad))
+    (define a (+ (pict-ascent pict) t-pad))
+    (define d (+ (pict-descent pict) b-pad))
+    (define rdc (new record-dc%))
+    (send rdc set-smoothing 'aligned)
+    (send rdc set-clipping-rect 0 0 aw ah)
+    (draw-pict pict rdc
+               (+ (if (negative? w) aw 0) l-pad)
+               (+ (if (negative? h) ah 0) t-pad))
+    (define recorded-datum (send rdc get-recorded-datum))
+    (list "pict-snip" aw ah d a recorded-datum))
+
+  (define convert-table-thread-cell (make-thread-cell #f))
+  (define (get-convert-table)
+    (unless (thread-cell-ref convert-table-thread-cell)
+      (thread-cell-set! convert-table-thread-cell (make-weak-hasheq)))
+    (thread-cell-ref convert-table-thread-cell))
+
+  (define exact-prefix 'never)
+  (define fraction-view (preferences:get 'framework:fraction-snip-style))
+  (define number-size (number-snip:make-pretty-print-size #:exact-prefix exact-prefix
+                                                          #:inexact-prefix (if (pretty-print-show-inexactness) 'always 'never)
+                                                          #:fraction-view fraction-view))
+
+  (define original-pretty-print-print-hook (pretty-print-print-hook))
+  (define (drracket-pretty-print-print-hook value display? port)
+    (define convert-table (get-convert-table))
+    (cond
+      [(not (port-writes-special? port)) (original-pretty-print-print-hook value display? port)]
+      [(pict:convertible? value)
+       (write-special (mk-pict-snip-args value) port)]
+      [(and (number? value)
+            (number-size value display? port))
+       (write-special (list "number" value (if (pretty-print-show-inexactness) 'always 'never) fraction-view) port)]
+      [(hash-ref convert-table value #f)
+       =>
+       (λ (backing-scale+bytes)
+         (hash-remove! convert-table value)
+         (write-special (cons "bitmap" backing-scale+bytes) port))]
+      [else (original-pretty-print-print-hook value display? port)]))
+
+  (define original-pretty-print-size-hook (pretty-print-size-hook))
+  (define (drracket-pretty-print-size-hook value display? port)
+    (define convert-table (get-convert-table))
+    (cond
+      [(not (port-writes-special? port)) (original-pretty-print-size-hook value display? port)]
+      [(pict:convertible? value) 1]
+      [(and (number? value) (number-size value display? port))]
+      [(syntax? value) 1]
+      [(hash-ref convert-table value #f)
+       ;; this handler can be called multiple times per value
+       ;; avoid building the png bytes more than once
+       1]
+      [(and (file:convertible? value)
+            (file:convert value 'png@2x-bytes #f))
+       =>
+       (λ (converted)
+         (hash-set! convert-table value (list 2 converted))
+         1)]
+      [(and (file:convertible? value)
+            (file:convert value 'png-bytes #f))
+       =>
+       (λ (converted)
+         (hash-set! convert-table value (list 1 converted))
+         1)]
+      [else (original-pretty-print-size-hook value display? port)]))
+
+  (values
+   (λ (thunk width)
+     (parameterize ([pretty-print-pre-print-hook (λ (val port) (void))]
+                    [pretty-print-post-print-hook (λ (val port) (void))]
+                    [pretty-print-exact-as-decimal #f]
+                    [pretty-print-depth #f]
+                    [pretty-print-.-symbol-without-bars #f]
+                    [pretty-print-show-inexactness #f]
+                    [pretty-print-abbreviate-read-macros #t]
+                    [pretty-print-current-style-table default-pretty-print-current-style-table]
+                    [pretty-print-remap-stylable (λ (x) #f)]
+                    [pretty-print-print-line
+                     (lambda (line port offset width)
+                       (when (and (number? width)
+                                  (not (eq? 0 line)))
+                         (newline port))
+                       0)]
+                    [pretty-print-columns width]
+                    [pretty-print-size-hook drracket-pretty-print-size-hook]
+                    [pretty-print-print-hook drracket-pretty-print-print-hook]
+                    [print-graph show-sharing])
+       (thunk)))
+   drracket-pretty-print-size-hook
+   drracket-pretty-print-print-hook))
+
 (define user-break-parameterization
-  (parameterize-break 
-   #t 
+  (parameterize-break
+   #t
    (current-break-parameterization)))
 
 ;; when running code inside DrRacket directly, this parameter is looked at
@@ -131,158 +270,150 @@ for bugs in this code to hopefully have some useful debugging information.
      (current-error-port current-error-pipe-out))))
 
 (let loop ()
-  (match (deserialize (read (current-input-port)))
-    [(list "complete-program" pretty-print-width submodules-to-run annotations prefab-module-settings currently-open-files path the-bytes)
-     (parameterize ([current-eventspace user-eventspace])
-       (queue-callback
-        (λ ()
-          (drracket-determined-width pretty-print-width)
-
-          ;; these are the steps that the language.rkt does `on-execute`
-          #;
-          (case annotations
-            [(debug)
-             ;; errortrace-annotate probably comes from this:
-             #;(define-values/invoke-unit/infer stacktrace/errortrace-annotate/key-module-name@)
-             (current-compile (make-debug-compile-handler/errortrace-annotate (current-compile) errortrace-annotate))
-             (error-display-handler
-              (drracket:debug:make-debug-error-display-handler
-               (error-display-handler)))]
-           
-            [(debug/profile)
-             (drracket:debug:profiling-enabled #t)
-             (error-display-handler
-              (drracket:debug:make-debug-error-display-handler
-               (error-display-handler)))
-             (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))]
-           
-            [(test-coverage)
-             (drracket:debug:test-coverage-enabled #t)
-             (error-display-handler
-              (drracket:debug:make-debug-error-display-handler
-               (error-display-handler)))
-             (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))])
-
-          ;; printing
-          #;
-          (begin
-            (define-values (my-setup-printing-parameters
-                            drracket-pretty-print-size-hook
-                            drracket-pretty-print-print-hook)
-              (make-setup-printing-parameters/extras))
-
-            (pretty-print-print-hook drracket-pretty-print-print-hook)
-            (pretty-print-size-hook drracket-pretty-print-size-hook)
-            (define first-time? (make-parameter #t))
-            (global-port-print-handler
-             (λ (value port [depth 0])
-               (define-values (converted-value write?)
-                 (call-with-values (lambda () (simple-module-based-language-convert-value value setting))
-                                   (case-lambda
-                                     [(converted-value) (values converted-value #t)]
-                                     [(converted-value write?) (values converted-value write?)])))
-               (define cols
-                 (cond
-                   [(not (simple-settings-insert-newlines setting)) 'infinity]
-                   [(exact-integer? (print-value-columns)) (print-value-columns)]
-                   [else (drracket:module-language:drracket-determined-width)]))
-          
-               (my-setup-printing-parameters
-                (λ ()
-                  (define (do-print)
-                    (if write?
-                        (pretty-write converted-value port)
-                        (pretty-print converted-value port depth)))
-                  (cond
-                    [(first-time?)
-                     (define orig-pretty-print-print-line (pretty-print-print-line))
-                     (define pppl
-                       (if (simple-settings-insert-newlines setting)
-                           ;; when drracket:module-language:drracket-determined-width
-                           ;; is set, we need to compensate for the newline
-                           ;; difference, so we do this to avoid that last newline
-                           (if (equal? (drracket:module-language:drracket-determined-width) 'infinity)
-                               orig-pretty-print-print-line
-                               (λ (new-line-number port len cols)
-                                 (when new-line-number
-                                   (orig-pretty-print-print-line new-line-number port len cols))))
-                           orig-pretty-print-print-line))
-                     (parameterize ([pretty-print-columns cols]
-                                    [pretty-print-print-line pppl]
-                                    [first-time? #f])
-                       (do-print))]
-                    [else (do-print)]))
-                setting
-                'infinity))))
-
-          ;; this is module-language.rkt's on-execute
-          ;; need to get `currently-open-files` from the drracket process
-          (set-module-language-parameters 
-           prefab-module-settings
-           #f ;; module-language-parallel-lock-client -- we don't support this
-           currently-open-files)
-          
-          (define (get-reader)
-            (λ (src port)
-              (define v
-                (parameterize ([read-accept-reader #t])
-                  (read-syntax src port)))
-              (if (eof-object? v)
-                  v
-                  (namespace-syntax-introduce v))))
-          (define repl-init-thunk (make-thread-cell #f))
-          (define get-sexp/syntax/eof
-            (front-end/complete-program get-reader
-                                        path
-                                        (λ () #f) ;; get-pre-compiled
-                                        submodules-to-run
-                                        'drracket:init:system-eventspace ;; ignored when the-irl is #f
-                                        raise-hopeless-exception raise-hopeless-syntax-error
-                                        repl-init-thunk
-
-                                        void ;; call-set-irl-mcli-vec
-                                        ;; we don't need to set-irl-mcli-vec! because we'll get the
-                                        ;; drracket:submit-predicate via read-language, I believe
-
-                                        (open-input-bytes the-bytes path)
-                                        #f ;; the-irl
-                                        ))
-
-          (run-some-user-code user-break-parameterization
-                              outermost
-                              pretty-print-width
-                              get-sexp/syntax/eof)
-
-          ;; this prompt is the same as in rep.rkt in evaluate-from-port
-          (call-with-continuation-prompt
+  (define datum-in (read (current-input-port)))
+  (cond
+    [(eof-object? datum-in) (exit 0)]
+    [else
+     (match (deserialize datum-in)
+       [(list "complete-program" pretty-print-width submodules-to-run annotations prefab-module-settings currently-open-files show-sharing insert-newlines path the-bytes)
+        (parameterize ([current-eventspace user-eventspace])
+          (queue-callback
            (λ ()
-             (call-with-break-parameterization
-              user-break-parameterization
-              (λ ()
-                ;; this is the module language's front-end/finished-complete-program
-                (cond [(thread-cell-ref repl-init-thunk)
-                       => (λ (t) (thread-cell-set! repl-init-thunk #f) (t))]))))
-           (default-continuation-prompt-tag)
-           (λ args (void)))
+             (drracket-determined-width pretty-print-width)
 
-          (flush-output current-output-pipe-out)
-          (flush-output current-error-pipe-out)
-          (send-msg `("finished-evaluation")))))
-     (loop)]
-    [(list "interaction" pretty-print-width the-bytes)
-     (parameterize ([current-eventspace user-eventspace])
-       (queue-callback
-        (λ ()
-          (drracket-determined-width pretty-print-width)
-          (define get-sexp/syntax/eof
-            (front-end/interaction (open-input-bytes the-bytes #f)))
-          (run-some-user-code user-break-parameterization
-                              outermost
-                              pretty-print-width
-                              get-sexp/syntax/eof)
-          (flush-output current-output-pipe-out)
-          (flush-output current-error-pipe-out)
-          (send-msg `("finished-evaluation")))))
-     (loop)]
-    [(? eof-object?)
-     (exit 0)]))
+             ;; these are the steps that the language.rkt does `on-execute`
+             #;
+             (case annotations
+               [(debug)
+                ;; errortrace-annotate probably comes from this:
+                #;(define-values/invoke-unit/infer stacktrace/errortrace-annotate/key-module-name@)
+                (current-compile (make-debug-compile-handler/errortrace-annotate (current-compile) errortrace-annotate))
+                (error-display-handler
+                 (drracket:debug:make-debug-error-display-handler
+                  (error-display-handler)))]
+
+               [(debug/profile)
+                (drracket:debug:profiling-enabled #t)
+                (error-display-handler
+                 (drracket:debug:make-debug-error-display-handler
+                  (error-display-handler)))
+                (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))]
+
+               [(test-coverage)
+                (drracket:debug:test-coverage-enabled #t)
+                (error-display-handler
+                 (drracket:debug:make-debug-error-display-handler
+                  (error-display-handler)))
+                (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))])
+
+             ;; printing
+             (let ()
+               (define-values (my-setup-printing-parameters
+                               drracket-pretty-print-size-hook
+                               drracket-pretty-print-print-hook)
+                 (make-setup-printing-parameters/extras show-sharing insert-newlines))
+
+               (pretty-print-print-hook drracket-pretty-print-print-hook)
+               (pretty-print-size-hook drracket-pretty-print-size-hook)
+               (define first-time? (make-parameter #t))
+               (global-port-print-handler
+                (λ (value port [depth 0])
+                  (define cols
+                    (cond
+                      [(not insert-newlines) 'infinity]
+                      [(exact-integer? (print-value-columns)) (print-value-columns)]
+                      [else (drracket-determined-width)]))
+
+                  (my-setup-printing-parameters
+                   (λ ()
+                     (define (do-print) (pretty-print value port depth))
+                     (cond
+                       [(first-time?)
+                        (define orig-pretty-print-print-line (pretty-print-print-line))
+                        (define pppl
+                          (if insert-newlines
+                              ;; when drracket:module-language:drracket-determined-width
+                              ;; is set, we need to compensate for the newline
+                              ;; difference, so we do this to avoid that last newline
+                              (if (equal? (drracket-determined-width) 'infinity)
+                                  orig-pretty-print-print-line
+                                  (λ (new-line-number port len cols)
+                                    (when new-line-number
+                                      (orig-pretty-print-print-line new-line-number port len cols))))
+                              orig-pretty-print-print-line))
+                        (parameterize ([pretty-print-columns cols]
+                                       [pretty-print-print-line pppl]
+                                       [first-time? #f])
+                          (do-print))]
+                       [else (do-print)]))
+                   'infinity))))
+
+             ;; this is module-language.rkt's on-execute
+             ;; need to get `currently-open-files` from the drracket process
+             (set-module-language-parameters
+              prefab-module-settings
+              #f ;; module-language-parallel-lock-client -- we don't support this
+              currently-open-files)
+
+             (define (get-reader)
+               (λ (src port)
+                 (define v
+                   (parameterize ([read-accept-reader #t])
+                     (read-syntax src port)))
+                 (if (eof-object? v)
+                     v
+                     (namespace-syntax-introduce v))))
+             (define repl-init-thunk (make-thread-cell #f))
+             (define get-sexp/syntax/eof
+               (front-end/complete-program get-reader
+                                           path
+                                           (λ () #f) ;; get-pre-compiled
+                                           submodules-to-run
+                                           'drracket:init:system-eventspace ;; ignored when the-irl is #f
+                                           raise-hopeless-exception raise-hopeless-syntax-error
+                                           repl-init-thunk
+
+                                           void ;; call-set-irl-mcli-vec
+                                           ;; we don't need to set-irl-mcli-vec! because we'll get the
+                                           ;; drracket:submit-predicate via read-language, I believe
+
+                                           (open-input-bytes the-bytes path)
+                                           #f ;; the-irl
+                                           ))
+
+             (run-some-user-code user-break-parameterization
+                                 outermost
+                                 pretty-print-width
+                                 get-sexp/syntax/eof)
+
+             ;; this prompt is the same as in rep.rkt in evaluate-from-port
+             (call-with-continuation-prompt
+              (λ ()
+                (call-with-break-parameterization
+                 user-break-parameterization
+                 (λ ()
+                   ;; this is the module language's front-end/finished-complete-program
+                   (cond [(thread-cell-ref repl-init-thunk)
+                          => (λ (t) (thread-cell-set! repl-init-thunk #f) (t))]))))
+              (default-continuation-prompt-tag)
+              (λ args (void)))
+
+             (flush-output current-output-pipe-out)
+             (flush-output current-error-pipe-out)
+             (send-msg `("finished-evaluation")))))
+        (loop)]
+       [(list "interaction" pretty-print-width the-bytes)
+        (parameterize ([current-eventspace user-eventspace])
+          (queue-callback
+           (λ ()
+             (drracket-determined-width pretty-print-width)
+             (define get-sexp/syntax/eof
+               (front-end/interaction (open-input-bytes the-bytes #f)))
+             (run-some-user-code user-break-parameterization
+                                 outermost
+                                 pretty-print-width
+                                 get-sexp/syntax/eof)
+             (flush-output current-output-pipe-out)
+             (flush-output current-error-pipe-out)
+             (send-msg `("finished-evaluation")))))
+        (loop)])]))

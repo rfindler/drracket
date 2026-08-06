@@ -28,6 +28,7 @@ TODO
          racket/gui/base
          racket/serialize
          framework
+         pict
          browser/external
          drracket/private/drsig
          "eval-helpers-and-pref-init.rkt"
@@ -36,6 +37,7 @@ TODO
          "parse-logger-args.rkt"
          "insulated-read-language.rkt"
          "run-module-language-program.rkt"
+         "pict-snip.rkt"
          
          ;; the dynamic-require below loads this module, 
          ;; so we make the dependency explicit here, even
@@ -1221,6 +1223,8 @@ TODO
                                 [else (drracket:language:simple-settings-annotations settings)])
                              ,(drracket:module-language:module-language-settings->prefab-module-settings settings #:irl the-irl)
                              ,currently-open-files
+                             ,(drracket:language:simple-settings-show-sharing settings)
+                             ,(drracket:language:simple-settings-insert-newlines settings)
                              ,path
                              ,(get-output-bytes bp)))
                           stdin)]
@@ -1396,36 +1400,59 @@ TODO
               (define finished-evaluation-chan (make-channel))
               (thread
                (λ ()
-                 ;; this probably isn't quite the right idea,
-                 ;; as it redirects what are internal errors
-                 ;; possibly into the bit bucket; they should
-                 ;; be shown to the user of drracket
-                 (copy-port stderr drracket:init:original-error-port)))
+                 ;; when there is output on stderr of the process, it might be a useful
+                 ;; message from the OS (segmentation fault?) or it might be a bug in
+                 ;; the code in drracket that manages up the separate process; lets
+                 ;; try to make it show up somewhere!
+                 (copy-port stderr drracket:init:original-error-port (get-err-port))))
               (thread
                (λ ()
                  (let loop ()
-                   (define msg (deserialize (read stdout)))
-                   (match msg
-                     [(? eof-object?) (void)]
-                     [`("stdout" ,btes)
-                      (write-bytes btes (get-out-port))
-                      (loop)]
-                     [`("stderr" ,btes)
-                      (write-bytes btes (get-err-port))
-                      (loop)]
-                     [`("value" ,btes)
-                      (write-bytes btes (get-value-port))
-                      (loop)]
-                     [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
-                      (parameterize ([current-error-port (get-err-port)])
-                        (drracket:debug:print-bug-to-stderr
-                         msg
-                         (srclocs->viewable-stack srclocs1 '() #;(list definitions-text this))
-                         (srclocs->viewable-stack srclocs2 '() #;(list definitions-text this))))
-                      (loop)]
-                     [`("finished-evaluation")
-                      (channel-put finished-evaluation-chan (void))
-                      (loop)]))))
+                   (define serialized-msg (read stdout))
+                   (cond
+                     [(eof-object? serialized-msg)
+                      (void)]
+                     [else
+                      (define msg (deserialize serialized-msg))
+                      (match msg
+                        [`(,(or "stdout" "stderr" "value") ,bytes-or-special)
+                         (define port
+                           (match (car msg)
+                             ["stdout" (get-out-port)]
+                             ["stderr" (get-err-port)]
+                             ["value" (get-value-port)]))
+                         (match bytes-or-special
+                           [(? bytes?)
+                            (write-bytes bytes-or-special port)]
+                           [(list "bitmap" (? integer? backing-scale) (? bytes? bitmap-bytes))
+                            (write-special (make-object image-snip%
+                                             (read-bitmap (open-input-bytes bitmap-bytes)
+                                                          #:backing-scale backing-scale))
+                                           port)]
+                           [(list "number" (? number? n) inexact-prefix fraction-view)
+                            (define snip/string
+                              (number-snip:number->string/snip n
+                                                               #:exact-prefix 'never
+                                                               #:inexact-prefix inexact-prefix
+                                                               #:fraction-view fraction-view))
+                            (if (string? snip/string)
+                                (display snip/string port)
+                                (write-special snip/string port))]
+                           [(list "pict-snip" width height descent ascent recorded-datum)
+                            (write-special
+                             (new pict-snip% [w width] [h height] [d descent] [a ascent] [recorded-datum recorded-datum])
+                             port)])
+                         (loop)]
+                        [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
+                         (parameterize ([current-error-port (get-err-port)])
+                           (drracket:debug:print-bug-to-stderr
+                            msg
+                            (srclocs->viewable-stack srclocs1 '() #;(list definitions-text this))
+                            (srclocs->viewable-stack srclocs2 '() #;(list definitions-text this))))
+                         (loop)]
+                        [`("finished-evaluation")
+                         (channel-put finished-evaluation-chan (void))
+                         (loop)])]))))
               (set! user-subprocess+ports (list separate-process stdin finished-evaluation-chan))))
           
           (let* ([init-thread-complete (make-semaphore 0)]
