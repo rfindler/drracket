@@ -55,13 +55,15 @@ for bugs in this code to hopefully have some useful debugging information.
 (define debug-error-display-handler
   (let ([original-error-display-hander (error-display-handler)])
     (λ (str exn)
-      (when (exn? exn)
-        (define srclocs1
-          (filter values (map cdr (continuation-mark-set->context (exn-continuation-marks exn)))))
-        (define srclocs2
-          '())
-        (send-msg `("print-bug-to-stderr" ,(exn-message exn) ,srclocs1 ,srclocs2)))
-      (original-error-display-hander str exn))))
+      (define srclocs1
+        (if (exn? exn)
+            (filter values (map cdr (continuation-mark-set->context (exn-continuation-marks exn))))
+            '()))
+      ;; supposed to be the stack from the continuation marks
+      (define srclocs2
+        '())
+      (define details (exn->error-display-handler-exn-details exn))
+      (send-msg `("error-display-handler" ,(exn-message exn) ,srclocs1 ,srclocs2 ,details)))))
 
 (define-values (current-output-pipe-in current-output-pipe-out) (make-pipe-with-specials))
 (define-values (current-error-pipe-in current-error-pipe-out) (make-pipe-with-specials))
@@ -377,7 +379,9 @@ for bugs in this code to hopefully have some useful debugging information.
                                            ;; we don't need to set-irl-mcli-vec! because we'll get the
                                            ;; drracket:submit-predicate via read-language, I believe
 
-                                           (open-input-bytes the-bytes path)
+                                           (let ([p (open-input-bytes the-bytes path)])
+                                             (port-count-lines! p)
+                                             p)
                                            #f ;; the-irl
                                            ))
 

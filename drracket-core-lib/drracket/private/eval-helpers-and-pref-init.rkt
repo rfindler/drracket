@@ -13,7 +13,8 @@
          "drracket-errortrace-key.rkt"
          (prefix-in *** '#%foreign) ;; just to make sure it is here
          "compiled-dir.rkt"
-         (submod "stack-checkpoint.rkt" item->srcloc))
+         (submod "stack-checkpoint.rkt" item->srcloc)
+         racket/serialize)
 
 (provide set-basic-parameters/no-gui
          set-module-language-parameters
@@ -23,7 +24,9 @@
          should-annotate?
          make-with-mark
          make-debug-compile-handler/errortrace-annotate
-         current-parallel-lock-shutdown-evt)
+         current-parallel-lock-shutdown-evt
+         (struct-out error-display-handler-exn-details)
+         exn->error-display-handler-exn-details)
 
 (preferences:set-default 'drracket:child-only-memory-limit
                          (* 1024 1024 128)
@@ -266,3 +269,23 @@
          e)
      immediate-eval?))
   drracket-debug-compile-handler)
+
+(serializable-struct error-display-handler-exn-details (exn-srclocs
+                                                        exn:fail?-exn
+                                                        exn:fail:user?-exn
+                                                        exn:fail:syntax?-exn
+                                                        exn:fail:syntax-strings
+                                                        exn-missing-module))
+
+
+(define (exn->error-display-handler-exn-details exn)
+  (define exn:fail:syntax?-exn (exn:fail:syntax? exn))
+  (error-display-handler-exn-details
+   (and (exn:srclocs? exn) ((exn:srclocs-accessor exn) exn))
+   (exn:fail? exn)
+   (exn:fail:user? exn)
+   exn:fail:syntax?-exn
+   (and exn:fail:syntax?-exn
+        (for/list ([expr (in-list (exn:fail:syntax-exprs exn))])
+          ((error-syntax->string-handler) expr #f)))
+   (and (exn:missing-module? exn) ((exn:missing-module-accessor exn) exn))))

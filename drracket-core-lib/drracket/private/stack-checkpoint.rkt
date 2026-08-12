@@ -608,9 +608,9 @@
                               (cons a 7))
                         #f))))
 
-(define (get-exn-source-locs defs exn a-viewable-stack1 a-viewable-stack2)
+(define (get-exn-source-locs defs exn-srclocs a-viewable-stack1 a-viewable-stack2)
   (cond
-    [(exn:srclocs? exn) ((exn:srclocs-accessor exn) exn)]
+    [exn-srclocs => values]
     [(pick-first-defs defs a-viewable-stack1) => list]
     [(pick-first-defs defs a-viewable-stack2) => list]
     [(viewable-stack-first-srcloc a-viewable-stack1) => list]

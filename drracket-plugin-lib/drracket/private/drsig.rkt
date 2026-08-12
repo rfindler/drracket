@@ -96,7 +96,6 @@
    test-coverage-off-style-name
    
    ;show-error-and-highlight
-   ;display-srclocs-in-error
    ;show-syntax-error-context
    ))
 
@@ -106,6 +105,9 @@
    cms->srclocs
    srcloc->edition/pair
    print-bug-to-stderr
+   display-error-message
+   display-srclocs-in-error
+   error-display-handler/stacktrace/stacks
    ))
 
 (define-signature drracket:module-language-cm^

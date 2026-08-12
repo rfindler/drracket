@@ -1443,12 +1443,15 @@ TODO
                              (new pict-snip% [w width] [h height] [d descent] [a ascent] [recorded-datum recorded-datum])
                              port)])
                          (loop)]
-                        [`("print-bug-to-stderr" ,msg ,srclocs1 ,srclocs2)
+                        [`("error-display-handler" ,msg ,srclocs1 ,srclocs2 ,details)
                          (parameterize ([current-error-port (get-err-port)])
-                           (drracket:debug:print-bug-to-stderr
+                           (drracket:debug:error-display-handler/stacktrace/stacks
                             msg
-                            (srclocs->viewable-stack srclocs1 '() #;(list definitions-text this))
-                            (srclocs->viewable-stack srclocs2 '() #;(list definitions-text this))))
+                            (srclocs->viewable-stack srclocs1 (list definitions-text this))
+                            (srclocs->viewable-stack srclocs2 (list definitions-text this))
+                            details
+                            #:interactions-text this
+                            #:definitions-text definitions-text))
                          (loop)]
                         [`("finished-evaluation")
                          (channel-put finished-evaluation-chan (void))
