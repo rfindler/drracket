@@ -271,6 +271,12 @@ for bugs in this code to hopefully have some useful debugging information.
      (current-output-port current-output-pipe-out)
      (current-error-port current-error-pipe-out))))
 
+(void
+ (thread
+  (λ ()
+    (sync (eventspace-handler-thread user-eventspace))
+    (exit 0))))
+
 (let loop ()
   (define datum-in (read (current-input-port)))
   (cond

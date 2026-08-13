@@ -940,7 +940,9 @@ TODO
         (define memory-killed? (not (custodian-box-value memory-killed-cust-box)))
         (set! gc-on-run? memory-killed?)
         (update-running #f)
-        (unless (and (get-user-thread) (thread-running? (get-user-thread)))
+        (unless (if user-subprocess+ports
+                    (equal? (subprocess-status (list-ref user-subprocess+ports 0)) 'running)
+                    (and (get-user-thread) (thread-running? (get-user-thread))))
           (lock #t)
           (when (and show-no-user-evaluation-message? (not shutting-down?))
             (no-user-evaluation-message
@@ -951,19 +953,19 @@ TODO
       (field (need-interaction-cleanup? #f))
       
       (define/private (no-user-evaluation-message exit-code memory-killed?)  ;; =Kernel=, =Handler=
+        (define ut (get-user-thread))
         (define-values (vs1 vs2)
-          (let ([ut (get-user-thread)])
-            (cond
-              [ut
-               (define cms (continuation-marks ut))
-               (define interesting-editors
-                 (list definitions-text this))
-               (define a-viewable-stack (cms->errortrace-viewable-stack cms interesting-editors))
-               (values a-viewable-stack
-                       (cms->builtin-viewable-stack cms interesting-editors
-                                                    #:share-cache a-viewable-stack))]
-              [else (values (empty-viewable-stack)
-                            (empty-viewable-stack))])))
+          (cond
+            [(and (not user-subprocess+ports) ut)
+             (define cms (continuation-marks ut))
+             (define interesting-editors
+               (list definitions-text this))
+             (define a-viewable-stack (cms->errortrace-viewable-stack cms interesting-editors))
+             (values a-viewable-stack
+                     (cms->builtin-viewable-stack cms interesting-editors
+                                                  #:share-cache a-viewable-stack))]
+            [else (values (empty-viewable-stack)
+                          (empty-viewable-stack))]))
         (no-user-evaluation-dialog (get-frame) exit-code memory-killed? #t)
         (set-insertion-point (last-position))
         (define have-some-stack? (not (and (empty-viewable-stack? vs1)
@@ -1021,6 +1023,13 @@ TODO
                  (append
                   (if program-terminated?
                       (list (string-constant evaluation-terminated-explanation))
+                      '())
+                  (if user-subprocess+ports
+                      (match (subprocess-status (list-ref user-subprocess+ports 0))
+                        ['running '()]
+                        [0 (list (string-constant separate-executable-terminated))]
+                        [_ (list (format (string-constant separate-executable-terminated-abnormally)
+                                         (subprocess-status (list-ref user-subprocess+ports 0))))])
                       '())
                   (if exit-code
                       (list (if (zero? exit-code)
