@@ -283,7 +283,7 @@ for bugs in this code to hopefully have some useful debugging information.
     [(eof-object? datum-in) (exit 0)]
     [else
      (match (deserialize datum-in)
-       [(list "complete-program" pretty-print-width submodules-to-run annotations prefab-module-settings currently-open-files show-sharing insert-newlines path the-bytes)
+       [(list "complete-program" pretty-print-width submodules-to-run annotations prefab-module-settings currently-open-files show-sharing insert-newlines defs-port-name path the-bytes)
         (parameterize ([current-eventspace user-eventspace])
           (queue-callback
            (λ ()
@@ -385,7 +385,7 @@ for bugs in this code to hopefully have some useful debugging information.
                                            ;; we don't need to set-irl-mcli-vec! because we'll get the
                                            ;; drracket:submit-predicate via read-language, I believe
 
-                                           (let ([p (open-input-bytes the-bytes path)])
+                                           (let ([p (open-input-bytes the-bytes defs-port-name)])
                                              (port-count-lines! p)
                                              p)
                                            #f ;; the-irl
@@ -412,13 +412,15 @@ for bugs in this code to hopefully have some useful debugging information.
              (flush-output current-error-pipe-out)
              (send-msg `("finished-evaluation")))))
         (loop)]
-       [(list "interaction" pretty-print-width the-bytes)
+       [(list "interaction" pretty-print-width ints-port-name port-line port-col port-pos the-bytes)
         (parameterize ([current-eventspace user-eventspace])
           (queue-callback
            (λ ()
              (drracket-determined-width pretty-print-width)
-             (define get-sexp/syntax/eof
-               (front-end/interaction (open-input-bytes the-bytes #f)))
+             (define port (open-input-bytes the-bytes ints-port-name))
+             (port-count-lines! port)
+             (set-port-next-location! port port-line port-col port-pos)
+             (define get-sexp/syntax/eof (front-end/interaction port))
              (run-some-user-code user-break-parameterization
                                  outermost
                                  pretty-print-width

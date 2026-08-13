@@ -491,6 +491,7 @@ TODO
                get-in-box-port
                get-insertion-point
                get-out-port
+               get-port-name
                get-regions
                get-snip-position
                get-start-position
@@ -1206,6 +1207,8 @@ TODO
             [else #f]))
         (define the-irl (send definitions-text get-irl))
         (define currently-open-files (drracket:module-language:get-currently-open-files))
+        (define defs-port-name (send definitions-text get-port-name))
+        (define ints-port-name (get-port-name))
         (run-in-evaluation-thread
          (λ () ; =User=, =Handler=, =No-Breaks=
            (define lang (drracket:language-configuration:language-settings-language (current-language-settings)))
@@ -1217,6 +1220,7 @@ TODO
                 (cond [(drracket:module-language:get-filename-from-definitions port) => (compose simplify-path cleanse-path)]
                       [else #f]))
               (define bp (open-output-bytes))
+              (define-values (port-line port-col port-pos) (port-next-location port))
               (copy-port port bp)
               (cond
                 [complete-program?
@@ -1234,12 +1238,17 @@ TODO
                              ,currently-open-files
                              ,(drracket:language:simple-settings-show-sharing settings)
                              ,(drracket:language:simple-settings-insert-newlines settings)
+                             ,defs-port-name
                              ,path
                              ,(get-output-bytes bp)))
                           stdin)]
                 [else
                  (writeln (serialize`("interaction"
                                       ,pretty-print-width
+                                      ,ints-port-name
+                                      ,port-line
+                                      ,port-col
+                                      ,port-pos
                                       ,(get-output-bytes bp)))
                           stdin)])
               (flush-output stdin)
