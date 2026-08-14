@@ -410,6 +410,7 @@ for bugs in this code to hopefully have some useful debugging information.
 
              (flush-output current-output-pipe-out)
              (flush-output current-error-pipe-out)
+             (flush-output current-value-pipe-out)
              (send-msg `("finished-evaluation")))))
         (loop)]
        [(list "interaction" pretty-print-width ints-port-name port-line port-col port-pos the-bytes)
@@ -427,5 +428,6 @@ for bugs in this code to hopefully have some useful debugging information.
                                  get-sexp/syntax/eof)
              (flush-output current-output-pipe-out)
              (flush-output current-error-pipe-out)
+             (flush-output current-value-pipe-out)
              (send-msg `("finished-evaluation")))))
         (loop)])]))
