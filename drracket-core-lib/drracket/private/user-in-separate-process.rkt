@@ -1,6 +1,8 @@
 #lang racket/base
 (require "run-module-language-program.rkt"
          "eval-helpers-and-pref-init.rkt"
+         (submod "stack-checkpoint.rkt" item->srcloc)
+         "drracket-errortrace-key.rkt"
          racket/contract
          racket/serialize
          racket/match
@@ -8,9 +10,11 @@
          racket/class
          racket/pretty
          racket/port
+         racket/unit
          framework/preferences
          (prefix-in file: file/convertible)
-         (prefix-in number-snip: framework/private/number-snip-size))
+         (prefix-in number-snip: framework/private/number-snip-size)
+         errortrace/stacktrace)
 
 #|
 
@@ -61,7 +65,9 @@ for bugs in this code to hopefully have some useful debugging information.
             '()))
       ;; supposed to be the stack from the continuation marks
       (define srclocs2
-        '())
+        (if (exn? exn)
+            (map errortrace-stack-item->srcloc (continuation-mark-set->list (exn-continuation-marks exn) drracket-errortrace-key))
+            '()))
       (define details (exn->error-display-handler-exn-details exn))
       (send-msg `("error-display-handler" ,(exn-message exn) ,srclocs1 ,srclocs2 ,details)))))
 
@@ -70,30 +76,53 @@ for bugs in this code to hopefully have some useful debugging information.
 (define-values (current-value-pipe-in current-value-pipe-out) (make-pipe-with-specials))
 
 (define (forward-output-back from-port name)
+  (define chan (make-channel))
   (define bts (make-bytes 256))
+  (define (send-something res)
+    (cond
+      [(procedure? res)
+       (define spec (res #f #f #f #f)) ;; pass #f in for the source location as I believe it is ignored anyway?
+       (send-msg `(,name ,spec))]
+      [else
+       (send-msg
+        `(,name ,(if (= res (bytes-length bts))
+                     bts
+                     (subbytes bts 0 res))))]))
   (void
    (thread
     (λ ()
       (let loop ()
-        (define res (read-bytes-avail! bts from-port))
-        (cond
-          [(eof-object? res)
-           ;;; stop forwarding data if the pipe is closed
-           (void)]
-          [(procedure? res)
-           (define spec (res #f #f #f #f)) ;; pass #f in for the source location as I believe it is ignored anyway?
-           (send-msg `(,name ,spec))
-           (loop)]
-          [else
-           (send-msg
-            `(,name ,(if (= res (bytes-length bts))
-                         bts
-                         (subbytes bts 0 res))))
-           (loop)]))))))
+        (sync
+         (handle-evt
+          (read-bytes-avail!-evt bts from-port)
+          (λ (res)
+            (cond
+              [(eof-object? res)
+               ;;; stop forwarding data if the pipe is closed
+               (void)]
+              [else
+               (send-something res)
+               (loop)])))
+         (handle-evt
+          chan
+          (λ (resp-chan)
+            (let get-all-bytes-loop ()
+              (define b (read-bytes-avail!* bts from-port))
+              (cond
+                [(equal? b 0)
+                 (channel-put resp-chan (void))
+                 (loop)]
+                [else
+                 (send-something b)
+                 (get-all-bytes-loop)])))))))))
+  (λ ()
+    (define c (make-channel))
+    (channel-put chan c)
+    (channel-get c)))
 
-(forward-output-back current-output-pipe-in "stdout")
-(forward-output-back current-error-pipe-in "stderr")
-(forward-output-back current-value-pipe-in "value")
+(define wait-for-stdout-io (forward-output-back current-output-pipe-in "stdout"))
+(define wait-for-stderr-io (forward-output-back current-error-pipe-in "stderr"))
+(define wait-for-value-io (forward-output-back current-value-pipe-in "value"))
 
 (define default-pretty-print-current-style-table (pretty-print-current-style-table))
 
@@ -277,6 +306,52 @@ for bugs in this code to hopefully have some useful debugging information.
     (sync (eventspace-handler-thread user-eventspace))
     (exit 0))))
 
+(define errortrace-annotate
+  (let ()
+    (define key-module-name 'drracket/private/drracket-errortrace-key)
+
+    #;
+    (define (special-source-handling-for-drr src)
+      (define rep (drracket:rep:current-rep))
+      (cond
+        [rep
+         (define defs (send rep get-definitions-text))
+         (cond
+           [(send rep port-name-matches? src)
+            (send rep get-port-name)]
+           [(send defs port-name-matches? src)
+            (send defs get-port-name)]
+           [else #f])]
+        [(is-a? src editor<%>) src] ;; can we skip this? ....probably?
+        [else #f]))
+    ;; it isn't clear what the complex version is actually accomplishing!
+    (define (special-source-handling-for-drr src) #f)
+    (define with-mark (make-with-mark special-source-handling-for-drr))
+
+    (define test-coverage-enabled (make-parameter #f))
+    (define current-test-coverage-info (make-thread-cell #f))
+    (define (test-coverage-point body expr phase) body)
+
+    (define profile-key (gensym))
+    (define profiling-enabled (make-parameter #f))
+    (define (initialize-profile-point key name expr) (void))
+    (define current-profile-info (make-thread-cell #f))
+    (define (register-profile-start key) #f)
+    (define (register-profile-done key start) (void))
+
+    (define-values/invoke-unit/infer stacktrace/errortrace-annotate/key-module-name@)
+
+    errortrace-annotate))
+
+(define (send-finished-evaluation-message)
+  (flush-output current-output-pipe-out)
+  (flush-output current-error-pipe-out)
+  (flush-output current-value-pipe-out)
+  (wait-for-stdout-io)
+  (wait-for-stderr-io)
+  (wait-for-value-io)
+  (send-msg `("finished-evaluation")))
+
 (let loop ()
   (define datum-in (read (current-input-port)))
   (cond
@@ -408,10 +483,7 @@ for bugs in this code to hopefully have some useful debugging information.
               (default-continuation-prompt-tag)
               (λ args (void)))
 
-             (flush-output current-output-pipe-out)
-             (flush-output current-error-pipe-out)
-             (flush-output current-value-pipe-out)
-             (send-msg `("finished-evaluation")))))
+             (send-finished-evaluation-message))))
         (loop)]
        [(list "interaction" pretty-print-width ints-port-name port-line port-col port-pos the-bytes)
         (parameterize ([current-eventspace user-eventspace])
@@ -426,8 +498,5 @@ for bugs in this code to hopefully have some useful debugging information.
                                  outermost
                                  pretty-print-width
                                  get-sexp/syntax/eof)
-             (flush-output current-output-pipe-out)
-             (flush-output current-error-pipe-out)
-             (flush-output current-value-pipe-out)
-             (send-msg `("finished-evaluation")))))
+             (send-finished-evaluation-message))))
         (loop)])]))
