@@ -365,16 +365,17 @@ for bugs in this code to hopefully have some useful debugging information.
              (drracket-determined-width pretty-print-width)
 
              ;; these are the steps that the language.rkt does `on-execute`
-             #;
              (case annotations
                [(debug)
                 ;; errortrace-annotate probably comes from this:
                 #;(define-values/invoke-unit/infer stacktrace/errortrace-annotate/key-module-name@)
                 (current-compile (make-debug-compile-handler/errortrace-annotate (current-compile) errortrace-annotate))
+                #;
                 (error-display-handler
                  (drracket:debug:make-debug-error-display-handler
                   (error-display-handler)))]
 
+               #;
                [(debug/profile)
                 (drracket:debug:profiling-enabled #t)
                 (error-display-handler
@@ -382,6 +383,7 @@ for bugs in this code to hopefully have some useful debugging information.
                   (error-display-handler)))
                 (current-eval (drracket:debug:make-debug-eval-handler (current-eval)))]
 
+               #;
                [(test-coverage)
                 (drracket:debug:test-coverage-enabled #t)
                 (error-display-handler
