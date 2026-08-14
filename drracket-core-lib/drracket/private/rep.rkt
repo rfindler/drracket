@@ -1411,7 +1411,9 @@ TODO
 
           (when (and (is-a? lang drracket:module-language:module-language<%>)
                      (drracket:module-language:module-language-settings-run-in-separate-process settings))
-            (parameterize ([current-custodian user-custodian])
+            (parameterize ([current-custodian user-custodian]
+                           [current-directory (or (send context get-directory) drracket:init:first-dir)]
+                           [current-directory-for-user (or (send context get-directory) drracket:init:first-dir)])
               (define-values (separate-process stdout stdin stderr)
                 (subprocess #f #f #f 'new drracket:init:system-exec-file-path #"-l" #"drracket/private/user-in-separate-process.rkt"))
               (file-stream-buffer-mode stderr 'none) ;; stderr isn't supposed to be used; it'll show error messages from bugs, tho
